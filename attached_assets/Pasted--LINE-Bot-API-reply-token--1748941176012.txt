@@ -1,0 +1,642 @@
+承知いたしました。現在のシステム状況と制約、そして新機能の要件を理解しました。
+LINE Bot API の reply_token が一度しか使えないという制約を回避しつつ、「スケジュール一覧」表示後に「参加予定を入力しますか？」というメッセージを表示し、ユーザーが「はい」と応答した場合に新しい reply_token で出欠登録Q&Aを開始する機能を実装します。既存機能の維持と必要最小限の修正を徹底します。
+実装方針
+ * list_schedules 関数の修正:
+   * スケジュール一覧を返信する際、QuickReply を使って「参加予定を入力しますか？」という選択肢（はい/いいえ）を提示します。
+   * この時点では start_attendance_qa は呼び出しません。
+   * get_all_records の引数エラーと ReplyMessageRequest の使用方法エラーを修正します。
+ * 新しいメッセージハンドラーの追加:
+   * ユーザーが「はい」と応答した際に、その新しいメッセージイベントの reply_token を使用して start_attendance_qa を呼び出すためのハンドラーを main.py (またはイベントを処理する中心的なファイル) に追加または修正します。
+   * このハンドラーは、SessionState を使って「スケジュール一覧」の後の「はい」の応答を識別できるようにします。
+ * attendance_qna.py の修正:
+   * get_all_records の引数エラー (worksheet_index -> worksheet_name) を修正します。
+   * reply_message の呼び出し方法 (ReplyMessageRequest の使用) を修正します。
+修正箇所とコード
+以下のファイルに修正を加えます。
+ * line_handlers/commands/schedule_commands.py (list_schedules関数の修正)
+ * line_handlers/qna/attendance_qna.py (get_all_recordsとreply_messageの使用方法の修正)
+ * main.py (スケジュール一覧後の「はい」を処理する部分の追加/修正)
+1. line_handlers/commands/schedule_commands.py の修正
+list_schedules 関数を修正し、一覧表示後に QuickReply を表示するようにします。
+import os
+from datetime import datetime
+import re
+# LINE Bot SDK v3 のインポート
+from linebot.v3.messaging import ( # MessagingApiとReplyMessageRequestを直接インポート
+    MessagingApi,
+    ReplyMessageRequest,
+    TextMessage, # TextMessageを直接インポート
+    QuickReply, # QuickReply を追加
+    QuickReplyItem, # QuickReplyItem を追加
+    MessageAction # MessageAction を追加
+)
+
+from config import Config, SessionState
+# 修正箇所: google_sheets.api_client から get_google_sheets_client をインポート
+from google_sheets.utils import get_all_records, add_record, delete_record, update_record
+from google_sheets.api_client import get_google_sheets_client # 追加
+# attendance_commands は直接呼び出さないため、インポートを削除
+
+# --- Google Sheetsクライアントの初期化 ---
+gc = get_google_sheets_client() # gcを適切に初期化
+
+# --- スケジュール登録フロー ---
+
+def start_schedule_registration(user_id, reply_token, line_bot_api_messaging: MessagingApi, user_sessions):
+    """
+    スケジュール登録の開始処理
+    """
+    user_sessions[user_id] = {'state': SessionState.ASKING_TITLE, 'data': {}}
+    messages = [TextMessage(text='新しいスケジュールのタイトルを教えてください。')]
+    line_bot_api_messaging.reply_message(
+        ReplyMessageRequest(
+            reply_token=reply_token,
+            messages=messages
+        )
+    )
+    print(f"DEBUG: Started schedule registration for user {user_id}")
+
+def handle_schedule_registration(user_id, user_message, reply_token, line_bot_api_messaging: MessagingApi, user_sessions, current_session):
+    """
+    スケジュール登録フロー中のユーザー応答を処理
+    """
+    state = current_session['state']
+    data = current_session['data']
+    messages = []
+
+    print(f"DEBUG: Handling schedule registration. State: {state}, Message: {user_message}")
+
+    if state == SessionState.ASKING_TITLE:
+        data['title'] = user_message
+        current_session['state'] = SessionState.ASKING_DATE
+        messages.append(TextMessage(text='開催日を教えてください。例: 2025/06/15'))
+    elif state == SessionState.ASKING_DATE:
+        if not re.match(r'^\d{4}/\d{2}/\d{2}$', user_message):
+            messages.append(TextMessage(text='日付の形式が正しくありません。YYYY/MM/DD形式で入力してください。例: 2025/06/15'))
+        else:
+            data['date'] = user_message
+            current_session['state'] = SessionState.ASKING_TIME
+            messages.append(TextMessage(text='開催時間を教えてください。例: 10:00 (時間のみでも可)'))
+    elif state == SessionState.ASKING_TIME:
+        if not re.match(r'^([01]?[0-9]|2[0-3])(:[0-5][0-9])?$', user_message):
+            messages.append(TextMessage(text='時間の形式が正しくありません。例: 10:00 または 10'))
+        else:
+            data['time'] = user_message
+            current_session['state'] = SessionState.ASKING_DURATION
+            messages.append(TextMessage(text='所要時間を教えてください（例: 2時間, 30分, 1時間半など）。'))
+    elif state == SessionState.ASKING_DURATION:
+        data['duration'] = user_message
+        current_session['state'] = SessionState.ASKING_LOCATION
+        messages.append(TextMessage(text='開催場所を教えてください。'))
+    elif state == SessionState.ASKING_LOCATION:
+        data['location'] = user_message
+        current_session['state'] = SessionState.ASKING_DETAIL
+        messages.append(TextMessage(text='詳細情報があれば教えてください（例: 持ち物、服装など）。'))
+    elif state == SessionState.ASKING_DETAIL:
+        data['detail'] = user_message
+        current_session['state'] = SessionState.ASKING_DEADLINE
+        messages.append(TextMessage(text='出欠締切日を教えてください。例: 2025/06/10'))
+    elif state == SessionState.ASKING_DEADLINE:
+        if not re.match(r'^\d{4}/\d{2}/\d{2}$', user_message):
+            messages.append(TextMessage(text='締切日の形式が正しくありません。YYYY/MM/DD形式で入力してください。例: 2025/06/10'))
+        else:
+            data['deadline'] = user_message
+            try:
+                record = {
+                    'タイトル': data['title'],
+                    '日付': data['date'],
+                    '時間': data['time'],
+                    '尺': data['duration'],
+                    '場所': data['location'],
+                    '詳細': data['detail'],
+                    '申込締切日': data['deadline']
+                }
+                add_record(gc, Config.SPREADSHEET_NAME, record, worksheet_name=Config.SCHEDULE_WORKSHEET_NAME)
+                messages.append(TextMessage(text='スケジュールを登録しました！'))
+                user_sessions.pop(user_id)
+            except Exception as e:
+                messages.append(TextMessage(text=f'スケジュールの登録中にエラーが発生しました: {e}'))
+                user_sessions.pop(user_id)
+
+    line_bot_api_messaging.reply_message(
+        ReplyMessageRequest(
+            reply_token=reply_token,
+            messages=messages
+        )
+    )
+
+def start_schedule_deletion(user_id, reply_token, line_bot_api_messaging: MessagingApi, user_sessions):
+    """
+    スケジュール削除の開始処理
+    """
+    user_sessions[user_id] = {'state': SessionState.DELETING_SCHEDULE_DATE, 'data': {}}
+    messages = [TextMessage(text='削除したいスケジュールの開催日を教えてください。例: 2025/06/15')]
+    line_bot_api_messaging.reply_message(
+        ReplyMessageRequest(
+            reply_token=reply_token,
+            messages=messages
+        )
+    )
+    print(f"DEBUG: Started schedule deletion for user {user_id}")
+
+def handle_schedule_deletion(user_id, user_message, reply_token, line_bot_api_messaging: MessagingApi, user_sessions, current_session):
+    """
+    スケジュール削除フロー中のユーザー応答を処理
+    """
+    state = current_session['state']
+    data = current_session['data']
+    messages = []
+
+    print(f"DEBUG: Handling schedule deletion. State: {state}, Message: {user_message}")
+
+    if state == SessionState.DELETING_SCHEDULE_DATE:
+        if not re.match(r'^\d{4}/\d{2}/\d{2}$', user_message):
+            messages.append(TextMessage(text='日付の形式が正しくありません。YYYY/MM/DD形式で入力してください。例: 2025/06/15'))
+        else:
+            data['date'] = user_message
+            current_session['state'] = SessionState.DELETING_SCHEDULE_TITLE
+            messages.append(TextMessage(text='次に、削除したいスケジュールのタイトルを教えてください。'))
+    elif state == SessionState.DELETING_SCHEDULE_TITLE:
+        data['title'] = user_message
+        current_session['state'] = SessionState.AWAITING_DELETE_CONFIRMATION
+        messages.append(TextMessage(text=f"「{data['date']} {data['title']}」を削除しますか？\n「はい」または「いいえ」と入力してください。"))
+    elif state == SessionState.AWAITING_DELETE_CONFIRMATION:
+        if user_message == 'はい':
+            try:
+                success = delete_record(gc, Config.SPREADSHEET_NAME, data['date'], data['title'], worksheet_name=Config.SCHEDULE_WORKSHEET_NAME)
+                if success:
+                    messages.append(TextMessage(text='スケジュールを削除しました。'))
+                else:
+                    messages.append(TextMessage(text='指定されたスケジュールは見つかりませんでした。'))
+            except Exception as e:
+                messages.append(TextMessage(text=f'スケジュールの削除中にエラーが発生しました: {e}'))
+            finally:
+                user_sessions.pop(user_id)
+        elif user_message == 'いいえ':
+            messages.append(TextMessage(text='スケジュール削除をキャンセルしました。'))
+            user_sessions.pop(user_id)
+        else:
+            messages.append(TextMessage(text='「はい」または「いいえ」で答えてください。'))
+
+    line_bot_api_messaging.reply_message(
+        ReplyMessageRequest(
+            reply_token=reply_token,
+            messages=messages
+        )
+    )
+
+def start_schedule_editing(user_id, reply_token, line_bot_api_messaging: MessagingApi, user_sessions):
+    """
+    スケジュール編集の開始処理
+    """
+    user_sessions[user_id] = {'state': SessionState.EDITING_SCHEDULE_DATE, 'data': {}}
+    messages = [TextMessage(text='編集したいスケジュールの開催日を教えてください。例: 2025/06/15')]
+    line_bot_api_messaging.reply_message(
+        ReplyMessageRequest(
+            reply_token=reply_token,
+            messages=messages
+        )
+    )
+    print(f"DEBUG: Started schedule editing for user {user_id}")
+
+def handle_schedule_editing(user_id, user_message, reply_token, line_bot_api_messaging: MessagingApi, user_sessions, current_session):
+    """
+    スケジュール編集フロー中のユーザー応答を処理
+    """
+    state = current_session['state']
+    data = current_session['data']
+    messages = []
+
+    print(f"DEBUG: Handling schedule editing. State: {state}, Message: {user_message}")
+
+    if state == SessionState.EDITING_SCHEDULE_DATE:
+        if not re.match(r'^\d{4}/\d{2}/\d{2}$', user_message):
+            messages.append(TextMessage(text='日付の形式が正しくありません。YYYY/MM/DD形式で入力してください。例: 2025/06/15'))
+        else:
+            data['date'] = user_message
+            current_session['state'] = SessionState.EDITING_SCHEDULE_TITLE
+            messages.append(TextMessage(text='次に、編集したいスケジュールのタイトルを教えてください。'))
+    elif state == SessionState.EDITING_SCHEDULE_TITLE:
+        data['title'] = user_message
+
+        all_schedules = get_all_records(gc, Config.SPREADSHEET_NAME, worksheet_name=Config.SCHEDULE_WORKSHEET_NAME)
+        found_schedule = None
+        for schedule in all_schedules:
+            if schedule.get('日付') == data['date'] and schedule.get('タイトル') == data['title']:
+                found_schedule = schedule
+                break
+
+        if found_schedule:
+            data['original_schedule'] = found_schedule
+            current_session['state'] = SessionState.SELECTING_EDIT_ITEM
+            messages.append(TextMessage(text='どの項目を編集しますか？ (タイトル, 日付, 時間, 尺, 場所, 詳細, 申込締切日)'))
+        else:
+            messages.append(TextMessage(text='指定された日付とタイトルのスケジュールは見つかりませんでした。'))
+            user_sessions.pop(user_id)
+
+    elif state == SessionState.SELECTING_EDIT_ITEM:
+        edit_item = user_message
+        valid_items = ['タイトル', '日付', '時間', '尺', '場所', '詳細', '申込締切日']
+        if edit_item in valid_items:
+            data['edit_item'] = edit_item
+            current_session['state'] = SessionState.ASKING_NEW_VALUE
+            messages.append(TextMessage(text=f'{edit_item} の新しい値を入力してください。'))
+        else:
+            messages.append(TextMessage(text='編集したい項目が正しくありません。「タイトル, 日付, 時間, 尺, 場所, 詳細, 申込締切日」の中から選んでください。'))
+
+    elif state == SessionState.ASKING_NEW_VALUE:
+        new_value = user_message
+        edit_item = data['edit_item']
+
+        if edit_item in ['日付', '申込締切日']:
+            if not re.match(r'^\d{4}/\d{2}/\d{2}$', new_value):
+                messages.append(TextMessage(text=f'{edit_item} の形式が正しくありません。YYYY/MM/DD形式で入力してください。'))
+                line_bot_api_messaging.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=reply_token,
+                        messages=messages
+                    )
+                )
+                return
+
+        if edit_item == '時間':
+            if not re.match(r'^([01]?[0-9]|2[0-3])(:[0-5][0-9])?$', new_value):
+                messages.append(TextMessage(text='時間の形式が正しくありません。例: 10:00 または 10'))
+                line_bot_api_messaging.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=reply_token,
+                        messages=messages
+                    )
+                )
+                return
+
+        try:
+            original_date = data['date']
+            original_title = data['title']
+
+            search_criteria = {'日付': original_date, 'タイトル': original_title}
+            update_data = {edit_item: new_value}
+
+            update_success = update_record(
+                gc,
+                Config.SPREADSHEET_NAME,
+                search_criteria,
+                update_data,
+                Config.SCHEDULE_WORKSHEET_NAME
+            )
+
+            if update_success:
+                messages.append(TextMessage(text=f'スケジュールを更新しました！'))
+            else:
+                messages.append(TextMessage(text=f'スケジュールの更新に失敗しました。元のスケジュールが見つからないか、処理に問題がありました。'))
+
+            user_sessions.pop(user_id)
+
+        except Exception as e:
+            messages.append(TextMessage(text=f'スケジュールの更新中にエラーが発生しました: {e}'))
+            user_sessions.pop(user_id)
+
+    line_bot_api_messaging.reply_message(
+        ReplyMessageRequest(
+            reply_token=reply_token,
+            messages=messages
+        )
+    )
+
+def list_schedules(user_id, reply_token, line_bot_api_messaging: MessagingApi, user_sessions):
+    """
+    「スケジュール一覧」コマンドの処理。
+    一覧表示後、出欠登録Q&Aを開始するかをユーザーに尋ねるQuickReplyを送信する。
+    """
+    print(f"DEBUG: Executing list_schedules for user: {user_id}")
+    try:
+        all_meetings = get_all_records(gc, Config.SPREADSHEET_NAME, worksheet_name=Config.SCHEDULE_WORKSHEET_NAME)
+
+        if all_meetings:
+            sorted_meetings = sorted(all_meetings, key=lambda x: (x.get('日付', '9999/12/31'), x.get('タイトル', '')))
+
+            response_text = "【登録済みのスケジュール一覧】\n\n"
+            for meeting in sorted_meetings:
+                title = meeting.get('タイトル', 'N/A')
+                date = meeting.get('日付', 'N/A')
+                time = meeting.get('時間', 'N/A')
+                duration = meeting.get('尺', 'N/A')
+                location = meeting.get('場所', 'N/A')
+                detail = meeting.get('詳細', 'N/A')
+                deadline = meeting.get('申込締切日', 'N/A')
+
+                response_text += (
+                    f"タイトル: {title}\n"
+                    f"日付: {date}\n"
+                    f"時間: {time}\n"
+                    f"所要時間: {duration}\n"
+                    f"場所: {location}\n"
+                    f"詳細: {detail}\n"
+                    f"出欠締切日: {deadline}\n"
+                    f"--------------------\n"
+                )
+            
+            # ユーザーに「参加予定を入力しますか？」と尋ねるQuickReplyをメッセージに追加
+            # 新しい状態 SessionState.AWAITING_ATTENDANCE_QA_CONFIRMATION を設定
+            user_sessions[user_id] = {'state': SessionState.AWAITING_ATTENDANCE_QA_CONFIRMATION, 'data': {}}
+
+            messages = [
+                TextMessage(text=response_text),
+                TextMessage(
+                    text="参加予定を入力しますか？",
+                    quick_reply=QuickReply(items=[
+                        QuickReplyItem(action=MessageAction(label='はい', text='はい')),
+                        QuickReplyItem(action=MessageAction(label='いいえ', text='いいえ'))
+                    ])
+                )
+            ]
+        else:
+            messages = [TextMessage(text="現在、登録されているスケジュールはありません。\n「スケジュール登録」でイベントを作成してください。")]
+            user_sessions.pop(user_id, None) # スケジュールがない場合はセッションをクリア
+
+        line_bot_api_messaging.reply_message(
+            ReplyMessageRequest(
+                reply_token=reply_token,
+                messages=messages
+            )
+        )
+        print(f"DEBUG: Finished listing schedules for user {user_id}")
+
+    except Exception as e:
+        reply_text = f"スケジュール一覧の取得中にエラーが発生しました。\nエラー: {e}"
+        print(f"Error processing schedule list: {e}")
+        messages = [TextMessage(text=reply_text)]
+        line_bot_api_messaging.reply_message(
+            ReplyMessageRequest(
+                reply_token=reply_token,
+                messages=messages
+            )
+        )
+
+
+2. line_handlers/qna/attendance_qna.py の修正
+start_attendance_qa および handle_attendance_qa_response 関数内で、get_all_records の引数と reply_message の呼び出し方法を修正します。
+import os
+# LINE Bot SDK v3 のモデルをインポート
+from linebot.v3.messaging.models import TextMessage as TextSendMessage
+from linebot.v3.messaging.models import QuickReply, QuickReplyItem, MessageAction
+from linebot.v3.messaging import ReplyMessageRequest # ReplyMessageRequest を追加
+from linebot.v3.messaging import MessagingApi # MessagingApi を追加
+
+from config import Config, SessionState
+from google_sheets.utils import get_all_records, update_or_add_attendee
+from google_sheets.api_client import get_google_sheets_client
+from datetime import datetime
+
+# gc の初期化は、このモジュール内で直接行うのではなく、
+# アプリケーションのエントリポイント (main.pyなど) から渡されるか、
+# 必要に応じて各関数内で呼び出すことが推奨されます。
+# ここでは、get_all_records に gc を渡せるように、一時的にここで初期化します。
+gc = get_google_sheets_client()
+
+def start_attendance_qa(user_id, reply_token, line_bot_api_messaging: MessagingApi, user_sessions):
+    """
+    「出欠登録」コマンドの開始処理。
+    参加予定イベントのリストをユーザーに提示し、どのイベントの出欠を登録するか尋ねる。
+    """
+    print(f"DEBUG: Starting attendance QA for user {user_id}")
+    try:
+        # 初期状態をSessionState.ASKING_ATTENDANCE_TARGET_EVENTに設定
+        user_sessions[user_id] = {'state': SessionState.ASKING_ATTENDANCE_TARGET_EVENT, 'data': {}}
+
+        # 修正: get_all_records に gc と worksheet_name を渡す
+        all_meetings = get_all_records(gc, Config.SPREADSHEET_NAME, worksheet_name=Config.SCHEDULE_WORKSHEET_NAME)
+
+        if not all_meetings:
+            # 修正: ReplyMessageRequest を使用
+            line_bot_api_messaging.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextSendMessage(text="現在、参加可能な今後のスケジュールはありません。\nまずは「スケジュール登録」でイベントを作成してください。")]
+                )
+            )
+            user_sessions.pop(user_id, None) # セッションをクリア
+            return
+
+        # 日付とタイトルでソートして表示
+        sorted_meetings = sorted(all_meetings, key=lambda x: (x.get('日付', '9999/12/31'), x.get('タイトル', '')))
+
+        response_text = "どのイベントの出欠を登録しますか？\n\n"
+        meeting_options = []
+
+        # ユーザーが選択しやすいように、日付とタイトルをまとめて表示
+        for i, meeting in enumerate(sorted_meetings):
+            title = meeting.get('タイトル', 'タイトル不明')
+            date = meeting.get('日付', '日付不明')
+            if title != 'タイトル不明' and date != '日付不明':
+                response_text += f"{i+1}. {date} {title}\n"
+                meeting_options.append({'date': date, 'title': title})
+
+        # セッションに選択肢を保存
+        user_sessions[user_id]['data']['meeting_options'] = meeting_options
+        # 状態は既にASKING_ATTENDANCE_TARGET_EVENTに設定済み
+
+        response_text += "\n番号を入力するか、イベントのタイトル（または日付 タイトル）を入力してください。"
+
+        # 修正: ReplyMessageRequest を使用
+        line_bot_api_messaging.reply_message(
+            ReplyMessageRequest(
+                reply_token=reply_token,
+                messages=[TextSendMessage(text=response_text)]
+            )
+        )
+        print(f"DEBUG: Asked attendance for user {user_id}.")
+
+    except Exception as e:
+        error_msg = f"出欠登録の開始中にエラーが発生しました: {e}"
+        print(f"ERROR: {error_msg}")
+        # 修正: ReplyMessageRequest を使用
+        line_bot_api_messaging.reply_message(
+            ReplyMessageRequest(
+                reply_token=reply_token,
+                messages=[TextSendMessage(text=error_msg)]
+            )
+        )
+        user_sessions.pop(user_id, None)
+
+
+def handle_attendance_qa_response(user_id, user_display_name, user_message, reply_token, line_bot_api_messaging: MessagingApi, user_sessions, current_session):
+    """
+    出欠登録Q&Aフロー中のユーザー応答を処理する。
+    """
+    state = current_session['state']
+    data = current_session['data']
+    messages = []
+
+    print(f"DEBUG: Handling attendance Q&A. State: {state}, Message: {user_message}")
+
+    if state == SessionState.ASKING_ATTENDANCE_TARGET_EVENT:
+        meeting_options = data.get('meeting_options', [])
+        selected_meeting = None
+
+        # ユーザー入力が数字かどうかで判断
+        if user_message.isdigit():
+            index = int(user_message) - 1
+            if 0 <= index < len(meeting_options):
+                selected_meeting = meeting_options[index]
+        else:
+            # タイトルまたは「日付 タイトル」で検索
+            for meeting_info in meeting_options:
+                full_match_string = f"{meeting_info['date']} {meeting_info['title']}"
+                if user_message == meeting_info['title'] or user_message == full_match_string:
+                    selected_meeting = meeting_info
+                    break
+
+        if selected_meeting:
+            data['attendance_event_title'] = selected_meeting['title']
+            data['attendance_event_date'] = selected_meeting['date']
+            current_session['state'] = SessionState.ASKING_ATTENDANCE_STATUS
+
+            messages.append(TextSendMessage(
+                text=f"{selected_meeting['date']} の「{selected_meeting['title']}」の出欠を登録します。\n出欠を教えてください（〇, △, ×）",
+                quick_reply=QuickReply(items=[
+                    QuickReplyItem(action=MessageAction(label='〇', text='〇')),
+                    QuickReplyItem(action=MessageAction(label='△', text='△')),
+                    QuickReplyItem(action=MessageAction(label='×', text='×'))
+                ])
+            ))
+        else:
+            messages.append(TextSendMessage(text="選択されたイベントが見つかりませんでした。\n正しい番号か、イベントのタイトル（または日付 タイトル）を入力してください。",
+                quick_reply=QuickReply(items=[
+                    QuickReplyItem(action=MessageAction(label='再入力', text='出欠登録'))
+                ])
+            ))
+            # エラー時はセッションを終了させるべきか、再入力させるべきか。再入力させる場合を想定し、セッションは継続。
+            # user_sessions.pop(user_id) # 必要に応じてコメント解除
+
+    elif state == SessionState.ASKING_ATTENDANCE_STATUS:
+        status = user_message
+        if status in ['〇', '△', '×']:
+            data['attendance_status'] = status
+            if status == '×':
+                current_session['state'] = SessionState.ASKING_REASON_IF_NO
+                messages.append(TextSendMessage(text="欠席理由や備考があれば教えてください。"))
+            else:
+                # 〇 または △ の場合、備考は空で確定に進む
+                data['attendance_remarks'] = ''
+                current_session['state'] = SessionState.AWAITING_ATTENDANCE_CONFIRMATION
+                messages.append(TextSendMessage(
+                    text=f"「{data['attendance_event_title']}」（{data['attendance_event_date']}）の出欠を「{data['attendance_status']}」で登録しますか？\n「はい」または「いいえ」と入力してください。",
+                    quick_reply=QuickReply(items=[
+                        QuickReplyItem(action=MessageAction(label='はい', text='はい')),
+                        QuickReplyItem(action=MessageAction(label='いいえ', text='いいえ'))
+                    ])
+                ))
+        else:
+            messages.append(TextSendMessage(text="出欠は「〇」「△」「×」のいずれかで入力してください。",
+                quick_reply=QuickReply(items=[
+                    QuickReplyItem(action=MessageAction(label='〇', text='〇')),
+                    QuickReplyItem(action=MessageAction(label='△', text='△')),
+                    QuickReplyItem(action=MessageAction(label='×', text='×'))
+                ])
+            ))
+
+    elif state == SessionState.ASKING_REASON_IF_NO:
+        data['attendance_remarks'] = user_message
+        current_session['state'] = SessionState.AWAITING_ATTENDANCE_CONFIRMATION
+        messages.append(TextSendMessage(
+            text=f"「{data['attendance_event_title']}」（{data['attendance_event_date']}）の出欠を「{data['attendance_status']}」、備考「{data['attendance_remarks']}」で登録しますか？\n「はい」または「いいえ」と入力してください。",
+            quick_reply=QuickReply(items=[
+                QuickReplyItem(action=MessageAction(label='はい', text='はい')),
+                QuickReplyItem(action=MessageAction(label='いいえ', text='いいえ'))
+            ])
+        ))
+
+    elif state == SessionState.AWAITING_ATTENDANCE_CONFIRMATION:
+        if user_message == 'はい':
+            try:
+                # 修正: update_or_add_attendee に gc を渡す
+                success, msg = update_or_add_attendee(
+                    gc, # gc を追加
+                    Config.SPREADSHEET_NAME,
+                    event_title=data['attendance_event_title'],
+                    event_date=data['attendance_event_date'],
+                    user_display_name=user_display_name,
+                    user_id=user_id,
+                    attendance_status=data['attendance_status'],
+                    remarks=data.get('attendance_remarks', ''),
+                    worksheet_name=Config.ATTENDEES_WORKSHEET_NAME # config.py から参照
+                )
+                if success:
+                    messages.append(TextSendMessage(text="出欠を登録しました！"))
+                else:
+                    messages.append(TextSendMessage(text=f"出欠登録中にエラーが発生しました: {msg}"))
+            except Exception as e:
+                messages.append(TextSendMessage(text=f"出欠登録中にエラーが発生しました: {e}"))
+            finally:
+                user_sessions.pop(user_id, None) # セッションをクリア
+        elif user_message == 'いいえ':
+            messages.append(TextSendMessage(text="出欠登録を中断しました。最初からやり直してください。"))
+            user_sessions.pop(user_id, None) # セッションをクリア
+        else:
+            messages.append(TextSendMessage(text="「はい」または「いいえ」で答えてください。",
+                quick_reply=QuickReply(items=[
+                    QuickReplyItem(action=MessageAction(label='はい', text='はい')),
+                    QuickReplyItem(action=MessageAction(label='いいえ', text='いいえ'))
+                ])
+            ))
+    
+    # 修正: ReplyMessageRequest を使用
+    line_bot_api_messaging.reply_message(
+        ReplyMessageRequest(
+            reply_token=reply_token,
+            messages=messages
+        )
+    )
+
+
+3. main.py の修正 (提案)
+main.py (またはイベントハンドリングの中心ファイル) で、ユーザーが「スケジュール一覧」後に「はい」と返答した場合に start_attendance_qa を呼び出すロジックを追加する必要があります。これは、handle_message 関数内で行われることが一般的です。
+以下のロジックを main.py の適切な箇所に追加してください。
+# main.py の既存のインポートに以下を追加
+from line_handlers.qna.attendance_qna import start_attendance_qa
+from config import SessionState # SessionState もインポートされていることを確認
+
+# ... (既存のコード) ...
+
+# handle_message 関数の例 (既存のロジックに合わせて調整してください)
+def handle_message(event, line_bot_api_messaging):
+    user_id = event.source.user_id
+    reply_token = event.reply_token
+    user_message = event.message.text
+
+    current_session = user_sessions.get(user_id, {})
+    state = current_session.get('state')
+
+    if state == SessionState.AWAITING_ATTENDANCE_QA_CONFIRMATION:
+        if user_message == 'はい':
+            # スケジュール一覧からの「はい」なので、新しいreply_tokenでQ&Aを開始
+            start_attendance_qa(user_id, reply_token, line_bot_api_messaging, user_sessions)
+        elif user_message == 'いいえ':
+            line_bot_api_messaging.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text='出欠登録をスキップしました。')]
+                )
+            )
+            user_sessions.pop(user_id, None) # セッションをクリア
+        else:
+            line_bot_api_messaging.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text='「はい」または「いいえ」で答えてください。')]
+                )
+            )
+    # 既存のコマンド処理、出欠Q&Aハンドリングなどを続ける
+    # elif user_message == 'スケジュール登録':
+    #     start_schedule_registration(...)
+    # elif state in [SessionState.ASKING_ATTENDANCE_TARGET_EVENT, ...]:
+    #     handle_attendance_qa_response(...)
+    # ...
+
+まとめと動作確認
+ * schedule_commands.py の list_schedules 関数は、スケジュール一覧表示後に「参加予定を入力しますか？」という QuickReply を表示し、その際に SessionState.AWAITING_ATTENDANCE_QA_CONFIRMATION を設定します。
+ * attendance_qna.py の start_attendance_qa と handle_attendance_qa_response 関数は、get_all_records の引数と reply_message の呼び出し方法が修正され、SDK v3 の正しい形式に準拠しています。
+ * main.py でユーザーが「はい」と応答した場合、その新しい reply_token で start_attendance_qa が呼び出され、出欠登録Q&Aが開始されます。
+この修正により、reply_token の重複使用の問題を回避しつつ、ご要望の新機能が実装されます。
+これらの変更を適用後、BOTの動作を確認してください。もし何か不明な点や、さらに修正が必要な箇所があれば、お気軽にお知らせください。

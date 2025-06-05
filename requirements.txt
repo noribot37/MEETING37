@@ -1,0 +1,7 @@
+Flask==2.3.3
+line-bot-sdk==3.17.1
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+gspread
+oauth2client
