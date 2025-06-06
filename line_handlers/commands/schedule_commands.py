@@ -1,333 +1,444 @@
-import gspread
-import pandas as pd # pandasも必要なのでインポート
 import os
-from datetime import datetime # datetimeも元のコードにあったのでインポート
+from datetime import datetime
+import re
+# LINE Bot SDK v3 のインポート
+from linebot.v3.messaging import ( # MessagingApiとReplyMessageRequestを直接インポート
+    MessagingApi,
+    ReplyMessageRequest,
+    TextMessage # TextMessageを直接インポート
+)
+# 追加: Quick Reply 関連のインポート
+from linebot.v3.messaging.models import QuickReply, QuickReplyItem, MessageAction
 
-# --- 初期化 ---
-# 認証情報は環境変数から読み込む
-SERVICE_ACCOUNT_KEY_JSON = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
-if SERVICE_ACCOUNT_KEY_JSON:
-    try:
-        # JSON文字列を直接読み込む (evalは危険だが、ユーザーが環境変数で設定しているため今回は使用)
-        gc = gspread.service_account_from_dict(eval(SERVICE_ACCOUNT_KEY_JSON))
-    except Exception as e:
-        raise ValueError(f"Error initializing gspread from GOOGLE_SHEETS_CREDENTIALS: {e}")
-else:
-    raise ValueError("GOOGLE_SHEETS_CREDENTIALS environment variable not set.")
+from config import Config, SessionState
+# ★★★ここを修正します★★★
+# 修正箇所: add_record を add_schedule_record と sort_sheet_by_date に変更
+from google_sheets.utils import get_all_records, add_schedule_record, delete_record, update_record, sort_sheet_by_date
+from google_sheets.api_client import get_google_sheets_client # 追加
+# 修正: attendance_commands モジュールからではなく、qna/attendance_qna モジュールから start_attendance_qa 関数をインポート
+from line_handlers.qna.attendance_qna import start_attendance_qa
 
-# スプレッドシート名を取得
-SPREADSHEET_NAME = os.getenv("GOOGLE_SHEETS_SPREADSHEET_NAME")
-if not SPREADSHEET_NAME:
-    raise ValueError("GOOGLE_SHEETS_SPREADSHEET_NAME environment variable not set.")
+# --- Google Sheetsクライアントの初期化 ---
+# utils.py と同様に、schedule_commands.py 内でも gc を利用できるよう宣言します。
+# 実際の運用では、gc はアプリケーションの起動時に一度だけ認証され、
+# その後、必要な関数に引数として渡されるか、グローバルにアクセス可能な状態にすることが推奨されます。
+# ここでは、utils.py の import と同様に、gspread の認証を想定した gc 変数を定義します。
+# この gc は、main.py など、アプリケーションのエントリポイントで実際に認証され、
+# 各関数に渡されることを前提とします。
+# 現状のコードでは、main.pyからgcが渡されていないため、
+# ここで仮にNoneを定義しておきます。実際の運用では適切なgcオブジェクトが渡されるようにしてください。
+# 修正箇所: gc = None を get_google_sheets_client() の呼び出しに変更
+gc = get_google_sheets_client() # gcを適切に初期化
 
-# グローバルなSHEETオブジェクト
-try:
-    SHEET = gc.open(SPREADSHEET_NAME)
-except gspread.SpreadsheetNotFound:
-    raise ValueError(f"Spreadsheet '{SPREADSHEET_NAME}' not found. Please check the name or permissions.")
+# --- スケジュール登録フロー ---
 
-
-# --- ヘルパー関数 (元の300行コードから維持) ---
-def get_worksheet(spreadsheet_name, worksheet_name): # gcはグローバルなSHEETを使用するので不要
-    """指定されたスプレッドシートとワークシートを取得するヘルパー関数"""
-    try:
-        # spreadsheet = gc.open(spreadsheet_name) # グローバルなSHEETを使うので不要
-        worksheet = SHEET.worksheet(worksheet_name)
-        return worksheet
-    except gspread.exceptions.WorksheetNotFound:
-        print(f"Error: Worksheet '{worksheet_name}' not found in '{spreadsheet_name}'.")
-        return None
-    except Exception as e:
-        print(f"An error occurred while getting worksheet: {e}")
-        return None
-
-def add_record(record_data, worksheet_name): # gcはグローバルなSHEETを使用するので不要
+def start_schedule_registration(user_id, reply_token, line_bot_api_messaging: MessagingApi, user_sessions):
     """
-    指定されたワークシートに新しいレコードを追加する。
-    record_dataは辞書形式。 (元の300行コードから維持)
+    スケジュール登録の開始処理
     """
-    worksheet = get_worksheet(SPREADSHEET_NAME, worksheet_name)
-    if worksheet is None:
-        return False
+    user_sessions[user_id] = {'state': SessionState.ASKING_TITLE, 'data': {}}
+    # MessagingTextMessage の代わりに TextMessage を使用
+    messages = [TextMessage(text='新しいスケジュールのタイトルを教えてください。')]
+    line_bot_api_messaging.reply_message(
+        ReplyMessageRequest(
+            reply_token=reply_token,
+            messages=messages
+        )
+    )
+    print(f"DEBUG: Started schedule registration for user {user_id}")
 
-    try:
-        # ヘッダー行を取得
-        headers = worksheet.row_values(1)
-
-        # record_data のキーとヘッダーを比較し、適切な順序で値のリストを作成
-        values_to_add = [record_data.get(header, '') for header in headers]
-
-        worksheet.append_row(values_to_add)
-        print(f"Record added successfully to '{worksheet_name}'.")
-        return True
-    except Exception as e:
-        print(f"Error adding record to '{worksheet_name}': {e}")
-        return False
-
-def get_all_records(worksheet_name): # gcはグローバルなSHEETを使用するので不要
+def handle_schedule_registration(user_id, user_message, reply_token, line_bot_api_messaging: MessagingApi, user_sessions, current_session):
     """
-    指定されたワークシートの全てのレコードを辞書のリストとして取得する。 (元の300行コードから維持)
+    スケジュール登録フロー中のユーザー応答を処理
     """
-    worksheet = get_worksheet(SPREADSHEET_NAME, worksheet_name)
-    if worksheet is None:
-        return pd.DataFrame() # DataFrameを返すように変更
+    state = current_session['state']
+    data = current_session['data']
+    messages = []
 
-    try:
-        records = worksheet.get_all_records()
-        print(f"Retrieved {len(records)} records from '{worksheet_name}'.")
-        return pd.DataFrame(records) # pandas DataFrameとして返す
-    except Exception as e:
-        print(f"Error retrieving records from '{worksheet_name}': {e}")
-        return pd.DataFrame() # エラー時は空のDataFrameを返す
+    print(f"DEBUG: Handling schedule registration. State: {state}, Message: {user_message}")
 
-def delete_record(date_to_delete, title_to_delete, worksheet_name): # gcはグローバルなSHEETを使用するので不要
+    if state == SessionState.ASKING_TITLE:
+        data['title'] = user_message
+        current_session['state'] = SessionState.ASKING_DATE
+        # MessagingTextMessage の代わりに TextMessage を使用
+        messages.append(TextMessage(text='開催日を教えてください。例: 2025/06/15'))
+    elif state == SessionState.ASKING_DATE:
+        if not re.match(r'^\d{4}/\d{2}/\d{2}$', user_message):
+            # MessagingTextMessage の代わりに TextMessage を使用
+            messages.append(TextMessage(text='日付の形式が正しくありません。YYYY/MM/DD形式で入力してください。例: 2025/06/15'))
+        else:
+            data['date'] = user_message
+            current_session['state'] = SessionState.ASKING_TIME
+            # MessagingTextMessage の代わりに TextMessage を使用
+            messages.append(TextMessage(text='開催時間を教えてください。例: 10:00 (時間のみでも可)'))
+    elif state == SessionState.ASKING_TIME:
+        # 時間の正規表現をより厳密に HH:MM または HH の形式に調整
+        # 例: '10:30' はOK, '10' はOK, '1030' はNG
+        if not re.match(r'^([01]?[0-9]|2[0-3])(:[0-5][0-9])?$', user_message):
+            # MessagingTextMessage の代わりに TextMessage を使用
+            messages.append(TextMessage(text='時間の形式が正しくありません。例: 10:00 または 10'))
+        else:
+            data['time'] = user_message
+            current_session['state'] = SessionState.ASKING_DURATION
+            # MessagingTextMessage の代わりに TextMessage を使用
+            messages.append(TextMessage(text='所要時間を教えてください（例: 2時間, 30分, 1時間半など）。'))
+    elif state == SessionState.ASKING_DURATION:
+        data['duration'] = user_message
+        current_session['state'] = SessionState.ASKING_LOCATION
+        # MessagingTextMessage の代わりに TextMessage を使用
+        messages.append(TextMessage(text='開催場所を教えてください。'))
+    elif state == SessionState.ASKING_LOCATION:
+        data['location'] = user_message
+        current_session['state'] = SessionState.ASKING_DETAIL
+        # MessagingTextMessage の代わりに TextMessage を使用
+        messages.append(TextMessage(text='詳細情報があれば教えてください（例: 持ち物、服装など）。'))
+    elif state == SessionState.ASKING_DETAIL:
+        data['detail'] = user_message
+        current_session['state'] = SessionState.ASKING_DEADLINE
+        # MessagingTextMessage の代わりに TextMessage を使用
+        messages.append(TextMessage(text='出欠締切日を教えてください。例: 2025/06/10'))
+    elif state == SessionState.ASKING_DEADLINE:
+        if not re.match(r'^\d{4}/\d{2}/\d{2}$', user_message):
+            # MessagingTextMessage の代わりに TextMessage を使用
+            messages.append(TextMessage(text='締切日の形式が正しくありません。YYYY/MM/DD形式で入力してください。例: 2025/06/10'))
+        else:
+            data['deadline'] = user_message
+            # 全ての情報が揃ったのでGoogle Sheetsに登録
+            try:
+                record = {
+                    'タイトル': data['title'],
+                    '日付': data['date'],
+                    '時間': data['time'],
+                    '尺': data['duration'], # 修正: '所要時間'から'尺'に変更
+                    '場所': data['location'],
+                    '詳細': data['detail'],
+                    '申込締切日': data['deadline'] # 修正: '出欠締切日'から'申込締切日'に変更
+                }
+                # ★★★ここを修正します★★★
+                # add_record の代わりに add_schedule_record を使用し、引数を調整
+                add_schedule_record(
+                    date=data['date'],
+                    time=data['time'],
+                    place=data['location'],
+                    title=data['title'],
+                    detail=data['detail'],
+                    deadline=data['deadline'],
+                    duration=data['duration'],
+                    worksheet_name=Config.SCHEDULE_WORKSHEET_NAME # このworksheet_nameが「シート1」を指している想定
+                )
+
+                # ★★★ここを追加します★★★
+                # 登録後にシートを日付で自動並べ替え
+                sort_success, sort_message = sort_sheet_by_date(
+                    date_column_name='日付',
+                    worksheet_name=Config.SCHEDULE_WORKSHEET_NAME
+                )
+
+                if sort_success:
+                    messages.append(TextMessage(text='スケジュールを登録し、シートを日付順に並べ替えました！'))
+                else:
+                    messages.append(TextMessage(text=f'スケジュールを登録しましたが、並べ替えに失敗しました: {sort_message}'))
+
+                user_sessions.pop(user_id) # セッションをクリア
+            except Exception as e:
+                # MessagingTextMessage の代わりに TextMessage を使用
+                messages.append(TextMessage(text=f'スケジュールの登録中にエラーが発生しました: {e}'))
+                user_sessions.pop(user_id) # エラー時はセッションをクリア
+
+    line_bot_api_messaging.reply_message(
+        ReplyMessageRequest(
+            reply_token=reply_token,
+            messages=messages
+        )
+    )
+
+def start_schedule_deletion(user_id, reply_token, line_bot_api_messaging: MessagingApi, user_sessions):
     """
-    指定されたワークシートから日付とタイトルが一致するレコードを削除する。 (元の300行コードから維持)
+    スケジュール削除の開始処理
     """
-    worksheet = get_worksheet(SPREADSHEET_NAME, worksheet_name)
-    if worksheet is None:
-        return False, "ワークシートが見つかりません。"
+    user_sessions[user_id] = {'state': SessionState.DELETING_SCHEDULE_DATE, 'data': {}}
+    # MessagingTextMessage の代わりに TextMessage を使用
+    messages = [TextMessage(text='削除したいスケジュールの開催日を教えてください。例: 2025/06/15')]
+    line_bot_api_messaging.reply_message(
+        ReplyMessageRequest(
+            reply_token=reply_token,
+            messages=messages
+        )
+    )
+    print(f"DEBUG: Started schedule deletion for user {user_id}")
 
-    try:
-        all_values = worksheet.get_all_values()
-        if not all_values:
-            return False, "ワークシートにデータがありません。"
+def handle_schedule_deletion(user_id, user_message, reply_token, line_bot_api_messaging: MessagingApi, user_sessions, current_session):
+    """
+    スケジュール削除フロー中のユーザー応答を処理
+    """
+    state = current_session['state']
+    data = current_session['data']
+    messages = []
 
-        headers = all_values[0]
-        rows_to_keep = [headers] # ヘッダーは常に保持
-        deleted_count = 0
+    print(f"DEBUG: Handling schedule deletion. State: {state}, Message: {user_message}")
 
-        for i, row in enumerate(all_values[1:], start=1): # ヘッダーの次の行から開始
-            record_dict = dict(zip(headers, row))
-            record_date = record_dict.get('日付', '').strip()
-            record_title = record_dict.get('タイトル', '').strip()
+    if state == SessionState.DELETING_SCHEDULE_DATE:
+        if not re.match(r'^\d{4}/\d{2}/\d{2}$', user_message):
+            # MessagingTextMessage の代わりに TextMessage を使用
+            messages.append(TextMessage(text='日付の形式が正しくありません。YYYY/MM/DD形式で入力してください。例: 2025/06/15'))
+        else:
+            data['date'] = user_message
+            current_session['state'] = SessionState.DELETING_SCHEDULE_TITLE
+            # MessagingTextMessage の代わりに TextMessage を使用
+            messages.append(TextMessage(text='次に、削除したいスケジュールのタイトルを教えてください。'))
+    elif state == SessionState.DELETING_SCHEDULE_TITLE:
+        data['title'] = user_message
+        current_session['state'] = SessionState.AWAITING_DELETE_CONFIRMATION
+        # MessagingTextMessage の代わりに TextMessage を使用
+        messages.append(TextMessage(text=f"「{data['date']} {data['title']}」を削除しますか？\n「はい」または「いいえ」と入力してください。"))
+    elif state == SessionState.AWAITING_DELETE_CONFIRMATION:
+        if user_message == 'はい':
+            try:
+                # 修正箇所: gc引数を追加
+                success = delete_record(gc, Config.SPREADSHEET_NAME, data['date'], data['title'], worksheet_name=Config.SCHEDULE_WORKSHEET_NAME)
+                if success:
+                    # MessagingTextMessage の代わりに TextMessage を使用
+                    messages.append(TextMessage(text='スケジュールを削除しました。'))
+                else:
+                    # MessagingTextMessage の代わりに TextMessage を使用
+                    messages.append(TextMessage(text='指定されたスケジュールは見つかりませんでした。'))
+            except Exception as e:
+                # MessagingTextMessage の代わりに TextMessage を使用
+                messages.append(TextMessage(text=f'スケジュールの削除中にエラーが発生しました: {e}'))
+            finally:
+                user_sessions.pop(user_id) # セッションをクリア
+        elif user_message == 'いいえ':
+            # MessagingTextMessage の代わりに TextMessage を使用
+            messages.append(TextMessage(text='スケジュール削除をキャンセルしました。'))
+            user_sessions.pop(user_id) # セッションをクリア
+        else:
+            # MessagingTextMessage の代わりに TextMessage を使用
+            messages.append(TextMessage(text='「はい」または「いいえ」で答えてください。'))
 
-            if record_date == date_to_delete.strip() and record_title == title_to_delete.strip():
-                deleted_count += 1
-                print(f"DEBUG: Deleting row {i+1} for Date: '{record_date}', Title: '{record_title}'")
+    line_bot_api_messaging.reply_message(
+        ReplyMessageRequest(
+            reply_token=reply_token,
+            messages=messages
+        )
+    )
+
+def start_schedule_editing(user_id, reply_token, line_bot_api_messaging: MessagingApi, user_sessions):
+    """
+    スケジュール編集の開始処理
+    """
+    user_sessions[user_id] = {'state': SessionState.EDITING_SCHEDULE_DATE, 'data': {}}
+    # MessagingTextMessage の代わりに TextMessage を使用
+    messages = [TextMessage(text='編集したいスケジュールの開催日を教えてください。例: 2025/06/15')]
+    line_bot_api_messaging.reply_message(
+        ReplyMessageRequest(
+            reply_token=reply_token,
+            messages=messages
+        )
+    )
+    print(f"DEBUG: Started schedule editing for user {user_id}")
+
+def handle_schedule_editing(user_id, user_message, reply_token, line_bot_api_messaging: MessagingApi, user_sessions, current_session):
+    """
+    スケジュール編集フロー中のユーザー応答を処理
+    """
+    state = current_session['state']
+    data = current_session['data']
+    messages = []
+
+    print(f"DEBUG: Handling schedule editing. State: {state}, Message: {user_message}")
+
+    if state == SessionState.EDITING_SCHEDULE_DATE:
+        if not re.match(r'^\d{4}/\d{2}/\d{2}$', user_message):
+            # MessagingTextMessage の代わりに TextMessage を使用
+            messages.append(TextMessage(text='日付の形式が正しくありません。YYYY/MM/DD形式で入力してください。例: 2025/06/15'))
+        else:
+            data['date'] = user_message
+            current_session['state'] = SessionState.EDITING_SCHEDULE_TITLE
+            # MessagingTextMessage の代わりに TextMessage を使用
+            messages.append(TextMessage(text='次に、編集したいスケジュールのタイトルを教えてください。'))
+    elif state == SessionState.EDITING_SCHEDULE_TITLE:
+        data['title'] = user_message
+
+        # 既存のスケジュールを検索
+        # 修正箇所: gc引数を追加
+        all_schedules = get_all_records(gc, Config.SPREADSHEET_NAME, worksheet_name=Config.SCHEDULE_WORKSHEET_NAME)
+        found_schedule = None
+        for schedule in all_schedules:
+            if schedule.get('日付') == data['date'] and schedule.get('タイトル') == data['title']:
+                found_schedule = schedule
+                break
+
+        if found_schedule:
+            data['original_schedule'] = found_schedule # 元のスケジュールデータを保存
+            current_session['state'] = SessionState.SELECTING_EDIT_ITEM
+            # 修正: valid_items のキー名をシートに合わせて変更
+            messages.append(TextMessage(text='どの項目を編集しますか？ (タイトル, 日付, 時間, 尺, 場所, 詳細, 申込締切日)'))
+        else:
+            # MessagingTextMessage の代わりに TextMessage を使用
+            messages.append(TextMessage(text='指定された日付とタイトルのスケジュールは見つかりませんでした。'))
+            user_sessions.pop(user_id) # 見つからなければセッション終了
+
+    elif state == SessionState.SELECTING_EDIT_ITEM:
+        edit_item = user_message
+        # 修正: valid_items のキー名をシートに合わせて変更
+        valid_items = ['タイトル', '日付', '時間', '尺', '場所', '詳細', '申込締切日']
+        if edit_item in valid_items:
+            data['edit_item'] = edit_item
+            current_session['state'] = SessionState.ASKING_NEW_VALUE
+            # MessagingTextMessage の代わりに TextMessage を使用
+            messages.append(TextMessage(text=f'{edit_item} の新しい値を入力してください。'))
+        else:
+            # MessagingTextMessage の代わりに TextMessage を使用
+            messages.append(TextMessage(text='編集したい項目が正しくありません。「タイトル, 日付, 時間, 尺, 場所, 詳細, 申込締切日」の中から選んでください。'))
+
+    elif state == SessionState.ASKING_NEW_VALUE:
+        new_value = user_message
+        edit_item = data['edit_item']
+
+        # 日付や締切日の形式チェック
+        # 修正: '出欠締切日' を '申込締切日' に変更
+        if edit_item in ['日付', '申込締切日']:
+            if not re.match(r'^\d{4}/\d{2}/\d{2}$', new_value):
+                # MessagingTextMessage の代わりに TextMessage を使用
+                messages.append(TextMessage(text=f'{edit_item} の形式が正しくありません。YYYY/MM/DD形式で入力してください。'))
+                line_bot_api_messaging.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=reply_token,
+                        messages=messages
+                    )
+                )
+                return
+
+        # 時間の形式チェック
+        if edit_item == '時間':
+            # より厳密な正規表現に調整
+            if not re.match(r'^([01]?[0-9]|2[0-3])(:[0-5][0-9])?$', new_value):
+                # MessagingTextMessage の代わりに TextMessage を使用
+                messages.append(TextMessage(text='時間の形式が正しくありません。例: 10:00 または 10'))
+                line_bot_api_messaging.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=reply_token,
+                        messages=messages
+                    )
+                )
+                return
+
+        try:
+            # 元のスケジュールタイトルと日付を使って更新
+            original_date = data['date']
+            original_title = data['title']
+
+            # update_recordの呼び出し方を確認し、適切に修正
+            # update_record(gc, spreadsheet_name, search_criteria, update_data, worksheet_name)
+            # として定義されているため、引数の順序と型を合わせる
+            search_criteria = {'日付': original_date, 'タイトル': original_title}
+            update_data = {edit_item: new_value}
+
+            # 修正箇所: gc引数を追加
+            update_success = update_record(
+                gc, # ここにgcを追加
+                Config.SPREADSHEET_NAME,
+                search_criteria,
+                update_data,
+                Config.SCHEDULE_WORKSHEET_NAME
+            )
+
+            if update_success:
+                # MessagingTextMessage の代わりに TextMessage を使用
+                messages.append(TextMessage(text=f'スケジュールを更新しました！'))
             else:
-                rows_to_keep.append(row)
+                # MessagingTextMessage の代わりに TextMessage を使用
+                messages.append(TextMessage(text=f'スケジュールの更新に失敗しました。元のスケジュールが見つからないか、処理に問題がありました。'))
 
-        if deleted_count > 0:
-            worksheet.clear()
-            worksheet.append_rows(rows_to_keep)
-            print(f"Deleted {deleted_count} record(s) from '{worksheet_name}'.")
-            return True, f"{deleted_count}件のスケジュールを削除しました。"
+            user_sessions.pop(user_id) # セッションをクリア
+
+        except Exception as e:
+            # MessagingTextMessage の代わりに TextMessage を使用
+            messages.append(TextMessage(text=f'スケジュールの更新中にエラーが発生しました: {e}'))
+            user_sessions.pop(user_id) # エラー時はセッションをクリア
+
+    line_bot_api_messaging.reply_message(
+        ReplyMessageRequest(
+            reply_token=reply_token,
+            messages=messages
+        )
+    )
+
+
+# list_schedules 関数に user_id と user_sessions 引数を追加
+def list_schedules(user_id, reply_token, line_bot_api_messaging: MessagingApi, user_sessions):
+    """
+    「スケジュール一覧」コマンドの処理。
+    """
+    print(f"DEBUG: Executing list_schedules for user: {user_id}")
+    try:
+        # 修正箇所: gc引数を追加
+        all_meetings = get_all_records(gc, Config.SPREADSHEET_NAME, worksheet_name=Config.SCHEDULE_WORKSHEET_NAME)
+
+        schedule_list_text = "" # response_textをschedule_list_textに名称変更
+
+        if all_meetings:
+            # 日付とタイトルでソート
+            sorted_meetings = sorted(all_meetings, key=lambda x: (x.get('日付', '9999/12/31'), x.get('タイトル', '')))
+
+            schedule_list_text += "【登録済みのスケジュール一覧】\n\n"
+            for meeting in sorted_meetings:
+                title = meeting.get('タイトル', 'N/A')
+                date = meeting.get('日付', 'N/A')
+                time = meeting.get('時間', 'N/A')
+                duration = meeting.get('尺', 'N/A') # 修正: '所要時間'から'尺'に変更
+                location = meeting.get('場所', 'N/A')
+                detail = meeting.get('詳細', 'N/A')
+                deadline = meeting.get('申込締切日', 'N/A') # 修正: '出欠締切日'から'申込締切日'に変更
+
+                schedule_list_text += (
+                    f"タイトル: {title}\n"
+                    f"日付: {date}\n"
+                    f"時間: {time}\n"
+                    f"所要時間: {duration}\n" # 所要時間を表示 (表示は所要時間でOK)
+                    f"場所: {location}\n"
+                    f"詳細: {detail}\n"
+                    f"出欠締切日: {deadline}\n" # 出欠締切日を表示 (表示は出欠締切日でOK)
+                    f"--------------------\n"
+                )
+
+            # 1つ目: スケジュール一覧のみ
+            # schedule_list_textは既に上で作成されている
+            # セッション状態を設定（出欠登録の意向確認待ち）
+            user_sessions[user_id] = {'state': SessionState.ASKING_ATTENDANCE_INTENTION, 'data': {}}
+            print(f"DEBUG: Asked attendance intention for user {user_id}")
+
+            # 2つ目: 参加予定の質問のみ（Quick Reply付き）
+            question_message = TextMessage(
+                text="参加予定を入力しますか？",
+                quick_reply=QuickReply(items=[
+                    QuickReplyItem(action=MessageAction(label='はい', text='はい')),
+                    QuickReplyItem(action=MessageAction(label='いいえ', text='いいえ'))
+                ])
+            )
+            messages = [TextMessage(text=schedule_list_text), question_message]
+
         else:
-            print(f"No matching record found for Date: '{date_to_delete}', Title: '{title_to_delete}' in '{worksheet_name}'.")
-            return False, "指定された日付とタイトルのスケジュールは見つかりませんでした。"
+            schedule_list_text = "現在、登録されているスケジュールはありません。\n「スケジュール登録」でイベントを作成してください。"
+            # スケジュールがない場合は、意向確認は不要なのでセッション状態は変更しない
+            messages = [TextMessage(text=schedule_list_text)] # スケジュールがない場合は1つのメッセージで応答
+
+        line_bot_api_messaging.reply_message(
+            ReplyMessageRequest(
+                reply_token=reply_token,
+                messages=messages
+            )
+        )
+        print(f"DEBUG: Finished listing schedules for user {user_id}")
 
     except Exception as e:
-        print(f"Error deleting record from '{worksheet_name}': {e}")
-        return False, f"スケジュールの削除中にエラーが発生しました: {e}"
-
-def update_record(search_criteria, update_data, worksheet_name): # gcはグローバルなSHEETを使用するので不要
-    """
-    指定されたワークシートで検索条件に一致するレコードを更新する。 (元の300行コードから維持)
-    search_criteria: 例 {'日付': '2023-04-01', 'タイトル': '会議'}
-    update_data: 例 {'場所': 'オンライン', '備考': '議題：新製品開発'}
-    """
-    worksheet = get_worksheet(SPREADSHEET_NAME, worksheet_name)
-    if worksheet is None:
-        return False, "ワークシートが見つかりません。"
-
-    try:
-        all_values = worksheet.get_all_values()
-        if not all_values:
-            return False, "ワークシートにデータがありません。"
-
-        headers = all_values[0]
-        data_rows = all_values[1:]
-
-        updated_count = 0
-        new_all_values = [headers]
-
-        for i, row_values in enumerate(data_rows):
-            record_dict = dict(zip(headers, row_values))
-
-            match = True
-            for key, value in search_criteria.items():
-                if record_dict.get(key) != value:
-                    match = False
-                    break
-
-            if match:
-                for update_key, update_value in update_data.items():
-                    if update_key in headers:
-                        col_index = headers.index(update_key)
-                        row_values[col_index] = update_value
-                updated_count += 1
-                print(f"DEBUG: Updated row {i+2} (original index {i+1}) with {update_data}")
-            new_all_values.append(row_values)
-
-        if updated_count > 0:
-            worksheet.clear()
-            worksheet.append_rows(new_all_values)
-            print(f"Updated {updated_count} record(s) in '{worksheet_name}'.")
-            return True, f"{updated_count}件のスケジュールを更新しました。"
-        else:
-            print(f"No matching record found for search criteria {search_criteria} in '{worksheet_name}'.")
-            return False, "指定された条件に一致するスケジュールは見つかりませんでした。"
-
-    except Exception as e:
-        print(f"Error updating record in '{worksheet_name}': {e}")
-        return False, f"スケジュールの更新中にエラーが発生しました: {e}"
-
-def sort_sheet_by_date(date_column_name='日付', worksheet_name='シート1', sort_order='ASCENDING'):
-    """
-    指定されたワークシートを日付カラムでソートする。 (元の300行コードから維持)
-    date_column_name: 日付が格納されているカラムの名前（例: '日付'）
-    sort_order: 'ASCENDING' (昇順) または 'DESCENDING' (降順)
-    """
-    worksheet = get_worksheet(SPREADSHEET_NAME, worksheet_name)
-    if worksheet is None:
-        return False, "ワークシートが見つかりません。"
-
-    try:
-        headers = worksheet.row_values(1)
-        if date_column_name not in headers:
-            return False, f"指定された日付カラム名 '{date_column_name}' が見つかりません。"
-
-        date_col_index = headers.index(date_column_name) + 1
-
-        worksheet.sort((date_col_index, sort_order))
-        print(f"Worksheet '{worksheet_name}' sorted by '{date_column_name}' in {sort_order} order.")
-        return True, "シートを日付で並べ替えました。"
-
-    except Exception as e:
-        print(f"Error sorting worksheet '{worksheet_name}': {e}")
-        return False, f"シートの並べ替え中にエラーが発生しました: {e}"
-
-# --- 新規追加・修正が必要な関数 (既存の関数を統合し、必要なものを追加) ---
-
-# update_or_add_attendee は元の300行コードにもありましたが、参加者情報シートの構造に合わせるため、
-# 以前の私の提案の形に修正して統合します。
-def update_or_add_attendee(date: str, title: str, user_id: str, username: str, attendance_status: str, notes: str = ""):
-    """
-    指定された日付とタイトルのイベントに対し、出席者を更新または追加する。
-    対象シートは 'シート2' （参加者情報シート）
-    """
-    try:
-        # 'シート2' を使用
-        worksheet = get_worksheet(SPREADSHEET_NAME, "シート2")
-        if worksheet is None:
-            return False, "ワークシート 'シート2' が見つかりません。"
-
-        df = pd.DataFrame(worksheet.get_all_records())
-
-        # 既存のレコードを探す
-        # 列名 '日付', 'タイトル', '参加者ID' を使用 (あなたのシート2の列名に合わせる)
-        mask = (df['日付'] == date) & \
-               (df['タイトル'] == title) & \
-               (df['参加者ID'] == user_id)
-
-        if not df[mask].empty:
-            # レコードを更新
-            row_index = df[mask].index[0] + 2 # gspreadは1-based indexとヘッダー行を考慮
-            # 列名 '出欠', '備考' を使用 (あなたのシート2の列名に合わせる)
-            worksheet.update_cell(row_index, df.columns.get_loc('出欠') + 1, attendance_status)
-            worksheet.update_cell(row_index, df.columns.get_loc('備考') + 1, notes)
-            print(f"Updated attendee for {username} in {title} on {date}.")
-        else:
-            # 新しいレコードを追加
-            # 列の順番に合わせてデータを準備: タイトル, 日付, 参加者名, 参加者ID, 出欠, 備考 (あなたのシート2の列名に合わせる)
-            next_row = [title, date, username, user_id, attendance_status, notes]
-            worksheet.append_row(next_row)
-            print(f"Added new attendee {username} to {title} on {date}.")
-        return True, "参加予定を更新しました。" if not df[mask].empty else "参加予定を登録しました。"
-    except Exception as e:
-        print(f"Error updating or adding attendee: {e}")
-        return False, f"参加予定の更新/登録中にエラーが発生しました: {e}"
-
-
-# get_attendees_for_user は以前のエラー解決のために導入し、attendance_qna.pyで必要
-def get_attendees_for_user(user_id: str):
-    """
-    特定のユーザーの参加予定を取得する。
-    スプレッドシートの 'シート2' からユーザーIDに一致する参加情報を抽出し、リストで返す。
-    """
-    try:
-        df = pd.DataFrame(SHEET.worksheet("シート2").get_all_records())
-        # '参加者ID' 列でフィルタリング
-        user_attendances = df[df['参加者ID'] == user_id]
-
-        if not user_attendances.empty:
-            # 表示に必要な列を選択（例: 'タイトル', '日付', '参加者名', '出欠', '備考'）
-            # ここはあなたのシート2の実際の列名に合わせてください
-            return user_attendances[['タイトル', '日付', '参加者名', '出欠', '備考']].values.tolist()
-        else:
-            return []
-    except Exception as e:
-        print(f"Error getting attendees for user: {e}")
-        return []
-
-# add_schedule_record は add_record の代わりとして、schedule_commands.pyで必要
-def add_schedule_record(date: str, time: str, place: str, title: str,
-                        detail: str, deadline: str, duration: str, worksheet_name: str = "シート1"):
-    """
-    新しいスケジュールレコードを指定されたワークシートに追加する。
-    """
-    try:
-        worksheet = get_worksheet(SPREADSHEET_NAME, worksheet_name)
-        if worksheet is None:
-            return False
-        # あなたのシート1の列名に合わせてデータを準備
-        # ヘッダー: 日付, 時間, 場所, タイトル, 詳細, 申込締切日, 尺
-        new_row = [date, time, place, title, detail, deadline, duration]
-        worksheet.append_row(new_row)
-        print(f"Schedule record added successfully to '{worksheet_name}'.")
-        return True
-    except Exception as e:
-        print(f"Error adding schedule record to '{worksheet_name}': {e}")
-        return False
-
-# delete_row_by_criteria は元の300行コードにあったが、現在どこからも呼び出されていない場合があるため、一旦統合する
-# 必要があればline_handlers/commands/schedule_commands.pyなどで呼び出しを修正する
-def delete_row_by_criteria(criteria_dict, worksheet_name): # gcはグローバルなSHEETを使用するので不要
-    """
-    指定されたワークシートから、複数の条件に一致する行を削除する。 (元の300行コードから維持)
-    criteria_dict: 辞書形式で、{'カラム名': '値'} の形で削除条件を指定。
-    """
-    worksheet = get_worksheet(SPREADSHEET_NAME, worksheet_name)
-    if worksheet is None:
-        return False, "ワークシートが見つかりません。"
-
-    try:
-        all_values = worksheet.get_all_values()
-        if not all_values:
-            return False, "ワークシートにデータがありません。"
-
-        headers = all_values[0]
-        data_rows = all_values[1:]
-
-        rows_to_keep = [headers] # ヘッダーは常に保持
-        deleted_count = 0
-
-        for i, row_values in enumerate(data_rows):
-            row_dict = dict(zip(headers, row_values))
-
-            match = True
-            for key, value in criteria_dict.items():
-                if key not in row_dict or row_dict[key] != value:
-                    match = False
-                    break
-
-            if match:
-                deleted_count += 1
-                print(f"DEBUG: Deleting row matching criteria: {criteria_dict}")
-            else:
-                rows_to_keep.append(row_values)
-
-        if deleted_count > 0:
-            worksheet.clear()
-            worksheet.append_rows(rows_to_keep)
-            print(f"Deleted {deleted_count} row(s) matching criteria from '{worksheet_name}'.")
-            return True, f"{deleted_count}件のレコードを削除しました。"
-        else:
-            print(f"No record found matching criteria: {criteria_dict} in '{worksheet_name}'.")
-            return False, "指定された条件に一致するレコードは見つかりませんでした。"
-
-    except Exception as e:
-        print(f"Error in delete_row_by_criteria: {e}")
-        return False, f"レコードの削除中にエラーが発生しました: {e}"
-
+        reply_text = f"スケジュール一覧の取得中にエラーが発生しました。\nエラー: {e}"
+        print(f"Error processing schedule list: {e}")
+        # MessagingTextMessage の代わりに TextMessage を使用
+        messages = [TextMessage(text=reply_text)]
+        line_bot_api_messaging.reply_message(
+            ReplyMessageRequest(
+                _あむよreply_token=reply_token,
+                messages=messages
+            )
+        )
