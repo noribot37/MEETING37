@@ -1,292 +1,331 @@
-import os
+import pandas as pd
 from datetime import datetime
-import re
-# LINE Bot SDK v3 のインポートに統一
-from linebot.v3.messaging import (
-    MessagingApi,
-    ReplyMessageRequest,
-    TextMessage # v3 の TextMessage を使用
-)
+from linebot.v3.messaging import MessagingApi, ReplyMessageRequest, TextMessage
 
 from config import Config, SessionState
-# インポート文を修正
-from google_sheets.utils import get_all_records, update_or_add_attendee, delete_row_by_criteria
+from google_sheets.utils import (
+    get_all_records,
+    update_or_add_attendee,
+    delete_row_by_criteria
+)
+# utils/session_managerからセッション操作関数をインポート
+from utils.session_manager import get_user_session_data, set_user_session_data, delete_user_session_data
 
-def start_attendance_editing(user_id, reply_token, line_bot_api_messaging: MessagingApi, user_sessions):
-    """
-    参加予定編集の開始処理
-    """
-    user_sessions[user_id] = {'state': SessionState.EDITING_ATTENDANCE_DATE, 'data': {}}
-    messages = [TextMessage(text='編集したい参加予定の開催日を教えてください。例: 2025/06/15')]
+
+# 参加予定一覧表示（ユーザーのIDに紐づく参加予定）
+def list_user_attendees(user_id, reply_token, line_bot_api_messaging: MessagingApi):
+    all_attendees_df = get_all_records(Config.GOOGLE_SHEETS_ATTENDEES_WORKSHEET_NAME)
+
+    if all_attendees_df.empty:
+        reply_message = "登録されている参加予定はありません。"
+    else:
+        # ユーザーIDでフィルタリング
+        user_attendees_df = all_attendees_df[all_attendees_df['ユーザーID'] == user_id]
+
+        if user_attendees_df.empty:
+            reply_message = "あなたの参加予定は登録されていません。"
+        else:
+            reply_message = "【あなたの参加予定一覧】\n"
+            # 日付でソート（日付がdatetime型であると仮定）
+            user_attendees_df = user_attendees_df.sort_values(by='日付', ascending=True)
+            for index, row in user_attendees_df.iterrows():
+                date_str = row['日付'].strftime('%Y/%m/%d') if pd.notna(row['日付']) else '日付未定'
+                reply_message += f"日付: {date_str}, タイトル: {row['タイトル']}\n"
+                reply_message += f"  出欠: {row.get('出欠', '未回答')}, 備考: {row.get('備考', 'なし')}\n\n"
+
     line_bot_api_messaging.reply_message(
         ReplyMessageRequest(
             reply_token=reply_token,
-            messages=messages
+            messages=[TextMessage(text=reply_message)]
         )
     )
-    print(f"DEBUG: Started attendance editing for user {user_id}")
 
-def handle_attendance_editing(user_id, user_display_name, user_message, reply_token, line_bot_api_messaging: MessagingApi, user_sessions, current_session):
-    """
-    参加予定編集フロー中のユーザー応答を処理
-    """
-    state = current_session['state']
-    data = current_session['data']
-    messages = []
+# 参加者一覧表示（イベントごとの参加者）
+def list_attendees(user_id, reply_token, line_bot_api_messaging: MessagingApi):
+    all_attendees_df = get_all_records(Config.GOOGLE_SHEETS_ATTENDEES_WORKSHEET_NAME)
 
-    print(f"DEBUG: Handling attendance editing. State: {state}, Message: {user_message}")
+    if all_attendees_df.empty:
+        reply_message = "登録されている参加者情報はありません。"
+    else:
+        reply_message = "【参加者一覧】\n"
+        # 日付とタイトルでグループ化し、参加者人数と参加者名を表示
+        # 日付をdatetime型に変換し、NaNを除外してからグループ化
+        all_attendees_df['日付_dt'] = pd.to_datetime(all_attendees_df['日付'], errors='coerce')
+        grouped_attendees = all_attendees_df[pd.notna(all_attendees_df['日付_dt'])].groupby(['日付_dt', 'タイトル'])
 
-    if state == SessionState.EDITING_ATTENDANCE_DATE:
-        if not re.match(r'^\d{4}/\d{2}/\d{2}$', user_message):
-            messages.append(TextMessage(text='日付の形式が正しくありません。YYYY/MM/DD形式で入力してください。例: 2025/06/15'))
+        if grouped_attendees.empty:
+             reply_message = "登録されている参加者情報はありません。" # 日付が無効なデータしかない場合
         else:
-            data['event_date'] = user_message
-            current_session['state'] = SessionState.EDITING_ATTENDANCE_TITLE
-            messages.append(TextMessage(text='次に、編集したい参加予定のタイトルを教えてください。'))
-    elif state == SessionState.EDITING_ATTENDANCE_TITLE:
-        data['event_title'] = user_message
+            for (date, title), group in grouped_attendees:
+                date_str = date.strftime('%Y/%m/%d')
+                attendee_count = len(group)
+                # 'ユーザーID' または '参加者名' カラムを使用
+                # 現状は'ユーザーID'を想定、必要に応じて'参加者名'に変更
+                attendee_names = ", ".join(group['ユーザーID'].tolist()) 
 
-        # Google Sheetsから該当の参加予定を検索
-        # ATTENDEES_WORKSHEET_NAME を使用
-        attendee_records = get_all_records(Config.SPREADSHEET_NAME, worksheet_name=Config.ATTENDEES_WORKSHEET_NAME)
-        found_record = None
-        for record in attendee_records:
-            # ユーザーIDとイベント日時、タイトルで絞り込み
-            # record.get('LINE ID') は、シートのヘッダーが 'LINE ID' であることを想定
-            # record.get('イベント開催日') は、シートのヘッダーが 'イベント開催日' であることを想定
-            # record.get('イベントタイトル') は、シートのヘッダーが 'イベントタイトル' であることを想定
-            # utils.pyの update_or_add_attendee 内では '参加者ID', '日付', 'タイトル' が使われているため、
-            # ここでの検索キーもそれに合わせるか、シートのヘッダー名を統一する必要がある。
-            # 今回はシートのヘッダー名が異なる可能性を考慮し、以下のように記載
-            if str(record.get('参加者ID')) == user_id and \
-               str(record.get('日付')) == data['event_date'] and \
-               str(record.get('タイトル')) == data['event_title']:
-                found_record = record
-                break
+                reply_message += f"日付: {date_str}, タイトル: {title}\n"
+                reply_message += f"  参加者人数: {attendee_count}\n"
+                reply_message += f"  参加者名: {attendee_names}\n\n"
 
-        if found_record:
-            data['original_attendee_record'] = found_record
-            current_session['state'] = SessionState.CONFIRM_ATTENDANCE_ACTION
-            messages.append(TextMessage(text=f"「{data['event_date']} {data['event_title']}」の参加予定を見つけました。\nキャンセルしますか？ (はい/いいえ)"))
-        else:
-            messages.append(TextMessage(text='指定されたイベントの参加予定は見つかりませんでした。日付とタイトルを確認してください。'))
-            user_sessions.pop(user_id) # 見つからなければセッション終了
+    line_bot_api_messaging.reply_message(
+        ReplyMessageRequest(
+            reply_token=reply_token,
+            messages=[TextMessage(text=reply_message)]
+        )
+    )
 
-    elif state == SessionState.CONFIRM_ATTENDANCE_ACTION:
-        if user_message == 'はい': # キャンセルする場合
-            try:
-                # delete_row_by_criteria を使用し、criteria 辞書を渡す
-                criteria = {
-                    'タイトル': data['event_title'],
-                    '日付': data['event_date'],
-                    '参加者ID': user_id # ユーザーIDも条件に含める
-                }
-                success, msg = delete_row_by_criteria(
-                    Config.SPREADSHEET_NAME,
-                    criteria, # criteria 辞書を渡す
-                    worksheet_index=1 # シート2 (参加者シート) を指定
-                )
-                if success:
-                    messages.append(TextMessage(text='参加予定をキャンセルしました。'))
-                else:
-                    messages.append(TextMessage(text=f'参加予定のキャンセルに失敗しました: {msg}'))
-            except Exception as e:
-                messages.append(TextMessage(text=f'参加予定のキャンセル中にエラーが発生しました: {e}'))
-            finally:
-                user_sessions.pop(user_id) # セッションクリア
-        elif user_message == 'いいえ': # 備考を編集する場合
-            current_session['state'] = SessionState.EDITING_ATTENDANCE_NOTE
-            messages.append(TextMessage(text='備考を編集しますか？ (はい/いいえ)'))
-        else:
-            messages.append(TextMessage(text='「はい」または「いいえ」で答えてください。'))
 
-    elif state == SessionState.EDITING_ATTENDANCE_NOTE:
-        if user_message == 'はい':
-            current_session['state'] = SessionState.ASK_NEW_ATTENDANCE_NOTE
-            messages.append(TextMessage(text='新しい備考を入力してください。'))
-        elif user_message == 'いいえ':
-            messages.append(TextMessage(text='備考の編集をスキップしました。'))
-            current_session['state'] = SessionState.ASK_ANOTHER_ATTENDANCE_EDIT # 次の編集を尋ねるステップへ
-            messages.append(TextMessage(text='他に編集したい予定はありますか？ (はい/いいえ)'))
-        else:
-            messages.append(TextMessage(text='「はい」または「いいえ」で答えてください。'))
+# 参加予定編集開始
+def start_attendee_edit(user_id, reply_token, line_bot_api_messaging: MessagingApi):
+    SessionState.set_state(user_id, SessionState.ASKING_ATTENDEE_DATE)
+    set_user_session_data(user_id, Config.SESSION_DATA_KEY, {'ユーザーID': user_id})
+    line_bot_api_messaging.reply_message(
+        ReplyMessageRequest(
+            reply_token=reply_token,
+            messages=[TextMessage(text="編集したい参加予定の日付をYYYY/MM/DD形式で入力してください。\n例: 2025/06/15")]
+        )
+    )
 
-    elif state == SessionState.ASK_NEW_ATTENDANCE_NOTE:
-        new_remarks = user_message
+# 参加予定編集の次のステップ
+def process_attendee_edit_step(user_id, message_text, reply_token, line_bot_api_messaging: MessagingApi):
+    current_state = SessionState.get_state(user_id)
+    session_data = get_user_session_data(user_id, Config.SESSION_DATA_KEY) or {}
+
+    if current_state == SessionState.ASKING_ATTENDEE_DATE:
         try:
-            # update_or_add_attendee を使用して備考を更新
-            # attendance_status には空文字列を渡すことで、備考のみを更新するように指示
-            success, msg = update_or_add_attendee(
-                Config.SPREADSHEET_NAME,
-                data['event_title'],
-                data['event_date'],
-                user_display_name, # user_display_name
-                user_id,
-                "", # attendance_status は空文字列で渡す（備考のみ更新のため）
-                new_remarks,
-                Config.ATTENDEES_WORKSHEET_NAME # シート名を渡す
-            )
-            if success:
-                messages.append(TextMessage(text='備考を更新しました。'))
-            else:
-                messages.append(TextMessage(text=f'備考の更新に失敗しました: {msg}'))
-        except Exception as e:
-            messages.append(TextMessage(text=f'備考の更新中にエラーが発生しました: {e}'))
-        finally:
-            current_session['state'] = SessionState.ASK_ANOTHER_ATTENDANCE_EDIT # 次の編集を尋ねるステップへ
-            messages.append(TextMessage(text='他に編集したい予定はありますか？ (はい/いいえ)'))
-
-    elif state == SessionState.ASK_ANOTHER_ATTENDANCE_EDIT:
-        if user_message == 'はい':
-            # 最初からやり直し
-            user_sessions[user_id] = {'state': SessionState.EDITING_ATTENDANCE_DATE, 'data': {}}
-            messages.append(TextMessage(text='編集したい参加予定の開催日を教えてください。例: 2025/06/15'))
-        elif user_message == 'いいえ':
-            messages.append(TextMessage(text='参加予定の編集を終了します。'))
-            user_sessions.pop(user_id) # セッションクリア
-        else:
-            messages.append(TextMessage(text='「はい」または「いいえ」で答えてください。'))
-
-    line_bot_api_messaging.reply_message(
-        ReplyMessageRequest(
-            reply_token=reply_token,
-            messages=messages
-        )
-    )
-
-def list_my_planned_events(user_id, user_display_name, reply_token, line_bot_api_messaging: MessagingApi):
-    """
-    指定されたユーザーIDの参加予定イベント一覧を表示する。
-    """
-    print(f"DEBUG: Executing list_my_planned_events for user: {user_id} ({user_display_name})")
-    try:
-        # Config.ATTENDEES_WORKSHEET_NAME を使用
-        all_attendees = get_all_records(Config.SPREADSHEET_NAME, worksheet_name=Config.ATTENDEES_WORKSHEET_NAME)
-
-        my_planned_events = []
-        for record in all_attendees:
-            # ユーザーIDとユーザー名が一致し、かつ出欠が「〇」または「△」のものを抽出
-            # ここもシートのヘッダー名とコード内でのキー名を合わせる必要がある
-            if record.get('参加者ID') == user_id and \
-               record.get('参加者名') == user_display_name and \
-               record.get('出欠') in ['〇', '△']:
-                my_planned_events.append(record)
-
-        if my_planned_events:
-            # 日付でソート
-            # イベント開催日ではなく、日付カラムでソート
-            sorted_events = sorted(my_planned_events, key=lambda x: (x.get('日付', '9999/12/31'), x.get('タイトル', '')))
-
-            response_text = f"【{user_display_name}さんの参加予定イベント一覧】\n\n"
-            for event in sorted_events:
-                event_title = event.get('タイトル', 'N/A')
-                event_date = event.get('日付', 'N/A')
-                attendance_status = event.get('出欠', 'N/A')
-                remarks = event.get('備考', 'N/A')
-
-                response_text += (
-                    f"タイトル: {event_title}\n"
-                    f"開催日: {event_date}\n"
-                    f"出欠: {attendance_status}\n"
-                    f"備考: {remarks}\n"
-                    f"--------------------\n"
-                )
-            messages = [TextMessage(text=response_text)]
-        else:
-            messages = [TextMessage(text="現在、あなたの参加予定イベントはありません。\n「出欠登録」でイベントに参加登録してください。")]
-
-        line_bot_api_messaging.reply_message(
-            ReplyMessageRequest(
-                reply_token=reply_token,
-                messages=messages
-            )
-        )
-        print(f"DEBUG: Finished listing planned events for user {user_id}")
-
-    except Exception as e:
-        reply_text = f"参加予定イベント一覧の取得中にエラーが発生しました。\nエラー: {e}"
-        print(f"Error processing my planned events list: {e}")
-        messages = [TextMessage(text=reply_text)]
-        line_bot_api_messaging.reply_message(
-            ReplyMessageRequest(
-                reply_token=reply_token,
-                messages=messages
-            )
-        )
-
-def list_participants(user_id, reply_token, line_bot_api_messaging: MessagingApi):
-    """
-    「参加者一覧」コマンドの処理。
-    イベントごとの参加者情報を表示。
-    """
-    print(f"DEBUG: Executing list_participants for user: {user_id}")
-    try:
-        # Config.ATTENDEES_WORKSHEET_NAME を使用
-        all_attendees = get_all_records(Config.SPREADSHEET_NAME, worksheet_name=Config.ATTENDEES_WORKSHEET_NAME)
-
-        if not all_attendees:
-            messages = [TextMessage(text="現在、登録されている参加者情報はありません。\nまずは「出欠登録」で参加者情報を登録してください。")]
+            pd.to_datetime(message_text, errors='raise')
+            session_data['日付'] = message_text
+            set_user_session_data(user_id, Config.SESSION_DATA_KEY, session_data)
+            SessionState.set_state(user_id, SessionState.ASKING_ATTENDEE_TITLE)
             line_bot_api_messaging.reply_message(
                 ReplyMessageRequest(
                     reply_token=reply_token,
-                    messages=messages
+                    messages=[TextMessage(text="次に、編集したい参加予定のタイトルを入力してください。")]
                 )
             )
+        except ValueError:
+            line_bot_api_messaging.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text="日付の形式が正しくありません。YYYY/MM/DD形式で入力してください。\n例: 2025/06/15")]
+                )
+            )
+    elif current_state == SessionState.ASKING_ATTENDEE_TITLE:
+        session_data['タイトル'] = message_text
+        set_user_session_data(user_id, Config.SESSION_DATA_KEY, session_data)
+
+        # 該当する参加予定が存在するか確認
+        all_attendees = get_all_records(Config.GOOGLE_SHEETS_ATTENDEES_WORKSHEET_NAME)
+        # 日付を正規化して比較
+        try:
+            search_date = pd.to_datetime(session_data['日付']).normalize()
+        except ValueError:
+            line_bot_api_messaging.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text="日付の形式が正しくありません。最初からやり直してください。")]
+                )
+            )
+            SessionState.set_state(user_id, SessionState.NONE)
+            delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
             return
 
-        # イベントごとに参加者をまとめる
-        events_with_attendees = {}
-        for record in all_attendees:
-            event_date = record.get('日付', '不明な日付') # イベント開催日ではなく日付
-            event_title = record.get('タイトル', '不明なタイトル') # イベントタイトルではなくタイトル
-            attendee_name = record.get('参加者名', '不明な参加者')
-            attendance_status = record.get('出欠', '不明')
-            remarks = record.get('備考', '')
+        matching_attendees = all_attendees[
+            (all_attendees['ユーザーID'] == user_id) &
+            (pd.notna(all_attendees['日付']) & (all_attendees['日付'].dt.normalize() == search_date)) &
+            (all_attendees['タイトル'] == session_data['タイトル'])
+        ]
 
-            event_key = (event_date, event_title)
-            if event_key not in events_with_attendees:
-                events_with_attendees[event_key] = {'attendees': []}
+        if not matching_attendees.empty:
+            SessionState.set_state(user_id, SessionState.ASKING_ATTENDEE_CONFIRM_CANCEL)
+            line_bot_api_messaging.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text="この参加予定をキャンセルしますか？（はい/いいえ）\n「いいえ」の場合、備考を編集します。")]
+                )
+            )
+        else:
+            SessionState.set_state(user_id, SessionState.NONE)
+            delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
+            line_bot_api_messaging.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text="指定された参加予定は見つかりませんでした。最初からやり直してください。")]
+                )
+            )
+    elif current_state == SessionState.ASKING_ATTENDEE_CONFIRM_CANCEL:
+        if message_text.lower() == 'はい':
+            # 参加予定を削除
+            criteria = {
+                'ユーザーID': user_id,
+                '日付': session_data['日付'],
+                'タイトル': session_data['タイトル']
+            }
+            if delete_row_by_criteria(Config.GOOGLE_SHEETS_ATTENDEES_WORKSHEET_NAME, criteria):
+                reply_message = "参加予定をキャンセルしました。\n他に編集したい予定はありますか？（はい/いいえ）"
+                SessionState.set_state(user_id, SessionState.ASKING_FOR_ANOTHER_ATTENDEE_EDIT)
+            else:
+                reply_message = "参加予定のキャンセルに失敗しました。最初からやり直してください。"
+                SessionState.set_state(user_id, SessionState.NONE)
+            delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
+            line_bot_api_messaging.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text=reply_message)]
+                )
+            )
+        else: # 'いいえ' の場合、備考編集へ
+            SessionState.set_state(user_id, SessionState.ASKING_ATTENDEE_EDIT_NOTES)
+            line_bot_api_messaging.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text="新しい備考を入力してください。（ない場合は「なし」）")]
+                )
+            )
+    elif current_state == SessionState.ASKING_ATTENDEE_EDIT_NOTES:
+        new_notes = message_text
+        session_data['備考'] = new_notes
 
-            events_with_attendees[event_key]['attendees'].append({
-                'name': attendee_name,
-                'status': attendance_status,
-                'remarks': remarks
-            })
-
-        # 日付とタイトルでソート
-        sorted_events_keys = sorted(events_with_attendees.keys(), key=lambda x: (x[0], x[1]))
-
-        response_text = "【イベント別参加者一覧】\n\n"
-        for event_date, event_title in sorted_events_keys:
-            attendees_info = events_with_attendees[(event_date, event_title)]['attendees']
-
-            response_text += f"◆イベント: {event_date} {event_title}\n"
-            response_text += f"参加者数: {len(attendees_info)}名\n"
-
-            for attendee in attendees_info:
-                response_text += f"　- {attendee['name']} ({attendee['status']})"
-                if attendee['remarks']:
-                    response_text += f" 備考: {attendee['remarks']}"
-                response_text += "\n"
-            response_text += "--------------------\n"
-
-        messages = [TextMessage(text=response_text)]
+        # 参加者情報を更新（備考のみ）
+        if update_or_add_attendee(session_data): # update_or_add_attendeeは既存があれば更新する
+            reply_message = "備考を更新しました。\n他に編集したい予定はありますか？（はい/いいえ）"
+            SessionState.set_state(user_id, SessionState.ASKING_FOR_ANOTHER_ATTENDEE_EDIT)
+        else:
+            reply_message = "備考の更新に失敗しました。最初からやり直してください。"
+            SessionState.set_state(user_id, SessionState.NONE)
+        delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
         line_bot_api_messaging.reply_message(
             ReplyMessageRequest(
                 reply_token=reply_token,
-                messages=messages
+                messages=[TextMessage(text=reply_message)]
             )
         )
-        print(f"DEBUG: Finished listing participants for user {user_id}")
+    elif current_state == SessionState.ASKING_FOR_ANOTHER_ATTENDEE_EDIT:
+        if message_text.lower() == 'はい':
+            start_attendee_edit(user_id, reply_token, line_bot_api_messaging)
+        else:
+            SessionState.set_state(user_id, SessionState.NONE)
+            delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
+            line_bot_api_messaging.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text="参加予定編集を終了します。")]
+                )
+            )
 
-    except Exception as e:
-        reply_text = f"参加者一覧の取得中にエラーが発生しました。\nエラー: {e}"
-        print(f"Error processing participants list: {e}")
-        messages = [TextMessage(text=reply_text)]
+# 参加予定登録開始
+def start_attendee_registration(user_id, reply_token, line_bot_api_messaging: MessagingApi):
+    SessionState.set_state(user_id, SessionState.ASKING_ATTENDEE_REGISTRATION_DATE)
+    set_user_session_data(user_id, Config.SESSION_DATA_KEY, {'ユーザーID': user_id})
+    line_bot_api_messaging.reply_message(
+        ReplyMessageRequest(
+            reply_token=reply_token,
+            messages=[TextMessage(text="参加したいスケジュールの日付をYYYY/MM/DD形式で入力してください。\n例: 2025/06/15")]
+        )
+    )
+
+# 参加予定登録の次のステップ
+def process_attendee_registration_step(user_id, message_text, reply_token, line_bot_api_messaging: MessagingApi):
+    current_state = SessionState.get_state(user_id)
+    session_data = get_user_session_data(user_id, Config.SESSION_DATA_KEY) or {}
+
+    if current_state == SessionState.ASKING_ATTENDEE_REGISTRATION_DATE:
+        try:
+            pd.to_datetime(message_text, errors='raise')
+            session_data['日付'] = message_text
+            set_user_session_data(user_id, Config.SESSION_DATA_KEY, session_data)
+            SessionState.set_state(user_id, SessionState.ASKING_ATTENDEE_REGISTRATION_TITLE)
+            line_bot_api_messaging.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text="次に、参加したいスケジュールのタイトルを入力してください。")]
+                )
+            )
+        except ValueError:
+            line_bot_api_messaging.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text="日付の形式が正しくありません。YYYY/MM/DD形式で入力してください。\n例: 2025/06/15")]
+                )
+            )
+    elif current_state == SessionState.ASKING_ATTENDEE_REGISTRATION_TITLE:
+        session_data['タイトル'] = message_text
+        set_user_session_data(user_id, Config.SESSION_DATA_KEY, session_data)
+        SessionState.set_state(user_id, SessionState.ASKING_ATTENDEE_STATUS)
         line_bot_api_messaging.reply_message(
             ReplyMessageRequest(
                 reply_token=reply_token,
-                messages=messages
+                messages=[TextMessage(text="出欠を入力してください。（例: 〇、✕、△）")]
             )
         )
+    elif current_state == SessionState.ASKING_ATTENDEE_STATUS:
+        attendee_status = message_text
+        if attendee_status in ['〇', '○', 'x', 'X', '✕', '△', '▲']: # 許容される出欠の文字
+            session_data['出欠'] = attendee_status
+            set_user_session_data(user_id, Config.SESSION_DATA_KEY, session_data)
+            SessionState.set_state(user_id, SessionState.ASKING_ATTENDEE_NOTES)
+            line_bot_api_messaging.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text="備考を入力してください。（ない場合は「なし」）")]
+                )
+            )
+        else:
+            line_bot_api_messaging.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text="出欠は「〇」「✕」「△」のいずれかで入力してください。")]
+                )
+            )
+    elif current_state == SessionState.ASKING_ATTENDEE_NOTES:
+        session_data['備考'] = message_text
+        set_user_session_data(user_id, Config.SESSION_DATA_KEY, session_data)
+        SessionState.set_state(user_id, SessionState.ASKING_CONFIRM_ATTENDEE_REGISTRATION)
 
+        confirm_message = "以下の内容で参加予定を登録します。よろしいですか？\n"
+        for key, value in session_data.items():
+            confirm_message += f"{key}: {value}\n"
+        confirm_message += "はい / いいえ"
+
+        line_bot_api_messaging.reply_message(
+            ReplyMessageRequest(
+                reply_token=reply_token,
+                messages=[TextMessage(text=confirm_message)]
+            )
+        )
+    elif current_state == SessionState.ASKING_CONFIRM_ATTENDEE_REGISTRATION:
+        if message_text.lower() == 'はい':
+            if update_or_add_attendee(session_data): # 新規登録も更新もこの関数で対応
+                reply_message = "参加予定を登録しました。\n他に登録したい参加予定はありますか？（はい/いいえ）"
+                SessionState.set_state(user_id, SessionState.ASKING_FOR_ANOTHER_ATTENDEE_REGISTRATION)
+            else:
+                reply_message = "参加予定の登録に失敗しました。最初からやり直してください。"
+                SessionState.set_state(user_id, SessionState.NONE)
+            delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
+            line_bot_api_messaging.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text=reply_message)]
+                )
+            )
+        else:
+            SessionState.set_state(user_id, SessionState.NONE)
+            delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
+            line_bot_api_messaging.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text="参加予定登録をキャンセルしました。")]
+                )
+            )
+    elif current_state == SessionState.ASKING_FOR_ANOTHER_ATTENDEE_REGISTRATION:
+        if message_text.lower() == 'はい':
+            start_attendee_registration(user_id, reply_token, line_bot_api_messaging)
+        else:
+            SessionState.set_state(user_id, SessionState.NONE)
+            delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
+            line_bot_api_messaging.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text="参加予定登録を終了します。")]
+                )
+            )

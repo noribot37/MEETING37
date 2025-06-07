@@ -1,74 +1,32 @@
+# main.py
+
 import os
 import sys
 from flask import Flask, request, abort
+from linebot.v3 import WebhookHandler
+from linebot.v3.messaging import Configuration, ApiClient, MessagingApi
+from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
-# LINE Bot SDK v3 のインポート
-# WebhookHandler は linebot.v3.webhook からで正しい
-from linebot.v3.webhook import WebhookHandler
-from linebot.v3.exceptions import InvalidSignatureError
-from linebot.v3.messaging import (
-    Configuration,
-    ApiClient,
-    MessagingApi,
-    ReplyMessageRequest,
-)
-from linebot.v3.webhooks import (
-    MessageEvent, # WebhookMessageEvent から MessageEvent に修正
-    TextMessageContent, # WebhookTextMessageContent は TextMessageContent のままで正しい
-    PostbackEvent, # WebhookPostbackEvent から PostbackEvent に修正
-    FollowEvent, # WebhookFollowEvent から FollowEvent に修正
-    UnfollowEvent, # WebhookUnfollowEvent から UnfollowEvent に修正
-    JoinEvent, # WebhookJoinEvent から JoinEvent に修正
-    LeaveEvent, # WebhookLeaveEvent から LeaveEvent に修正
-    MemberJoinedEvent, # WebhookMemberJoinedEvent から MemberJoinedEvent に修正
-    MemberLeftEvent, # WebhookMemberLeftEvent から MemberLeftEvent に修正
-    BeaconEvent, # WebhookBeaconEvent から BeaconEvent に修正
-    AccountLinkEvent, # WebhookAccountLinkEvent から AccountLinkEvent に修正
-    ThingsEvent # WebhookThingsEvent から ThingsEvent に修正
-)
+# sys.path.append(os.path.join(os.path.dirname(__file__), 'line_handlers'))
 
-# config.py から設定をインポート
-from config import (
-    LINE_CHANNEL_ACCESS_TOKEN,
-    LINE_CHANNEL_SECRET,
-    Config # Configクラスをインポート
-)
+from line_handlers.message_processors import process_message # 修正: process_message をインポート
 
-# 各ハンドラをインポート
-# これらのハンドラは event_callbacks.py に定義されており、
-# event_callbacks.py 内で MessageEvent など正しい v3 クラス名を使用していることを前提とする
-from line_handlers.event_callbacks import (
-    handle_message_event,
-    handle_postback_event,
-    handle_follow_event,
-    handle_unfollow_event,
-    handle_join_event,
-    handle_leave_event,
-    handle_member_joined_event,
-    handle_member_left_event,
-    handle_beacon_event,
-    handle_account_link_event,
-    handle_things_event
-)
+app = Flask(__name__)
 
-print("LINE SDK modules imported.")
-print("Google Sheets modules will be imported by respective handlers.")
+# 環境変数からLINE Developersの情報を取得
+CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN')
+CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET')
 
-try:
-    # Flaskアプリの初期化
-    app = Flask(__name__)
-
-    # LINE Bot SDK v3 Configuration and WebhookHandler initialized.
-    configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
-    api_client = ApiClient(configuration)
-    line_bot_api_messaging = MessagingApi(api_client) # MessagingApiクライアントを初期化
-    handler = WebhookHandler(LINE_CHANNEL_SECRET)
-    print("LINE Bot SDK Configuration and WebhookHandler initialized.")
-
-except Exception as e:
-    print(f"Error loading config.py or initializing LINE Bot SDK: {e}")
-    print("Please ensure LINE_CHANNEL_ACCESS_TOKEN and LINE_CHANNEL_SECRET are correctly set as environment variables in Replit.")
+if CHANNEL_ACCESS_TOKEN is None:
+    print('Specify LINE_CHANNEL_ACCESS_TOKEN as environment variable.')
     sys.exit(1)
+if CHANNEL_SECRET is None:
+    print('Specify LINE_CHANNEL_SECRET as environment variable.')
+    sys.exit(1)
+
+# LINE Bot SDKの設定
+configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
+handler = WebhookHandler(CHANNEL_SECRET)
 
 @app.route("/callback", methods=['POST'])
 def callback():
@@ -78,69 +36,22 @@ def callback():
 
     try:
         handler.handle(body, signature)
-    except InvalidSignatureError:
-        print("Invalid signature. Please check your channel access token/channel secret.")
-        abort(400)
     except Exception as e:
-        print(f"Error handling webhook: {e}")
+        app.logger.error("Error: %s", e)
         abort(500)
     return 'OK'
 
-# @handler.add デコレータの引数も修正されたクラス名に合わせる
 @handler.add(MessageEvent, message=TextMessageContent)
-def handle_message(event):
-    # テキストメッセージはhandle_message_eventに任せる
-    handle_message_event(event) # event_callbacks.py の handle_message_event が MessagingApi を受け取らないため引数を修正
+def handle_message(event: MessageEvent): # eventの型ヒントを追加
+    with ApiClient(configuration) as api_client:
+        line_bot_api_messaging = MessagingApi(api_client)
 
-# TextMessageContent以外のMessageEventはhandle_message_event内で処理されるべきであるため、
-# 以下のハンドラは不要。handle_message_eventがイベントタイプを適切に判別する前提。
-# @handler.add(MessageEvent) # こちらも MessageEvent に修正
-# def handle_other_message_types(event):
-#     if not isinstance(event.message, TextMessageContent): # こちらも TextMessageContent のままで正しい
-#         handle_message_event(event) # MessagingApi を渡さない
-
-@handler.add(PostbackEvent)
-def handle_postback(event):
-    handle_postback_event(event) # MessagingApi を渡さない
-
-@handler.add(FollowEvent)
-def handle_follow(event):
-    handle_follow_event(event) # MessagingApi を渡さない
-
-@handler.add(UnfollowEvent)
-def handle_unfollow(event):
-    handle_unfollow_event(event) # MessagingApi を渡さない
-
-@handler.add(JoinEvent)
-def handle_join(event):
-    handle_join_event(event) # MessagingApi を渡さない
-
-@handler.add(LeaveEvent)
-def handle_leave(event):
-    handle_leave_event(event) # MessagingApi を渡さない
-
-@handler.add(MemberJoinedEvent)
-def handle_member_joined(event):
-    handle_member_joined_event(event) # MessagingApi を渡さない
-
-@handler.add(MemberLeftEvent)
-def handle_member_left(event):
-    handle_member_left_event(event) # MessagingApi を渡さない
-
-@handler.add(BeaconEvent)
-def handle_beacon(event):
-    handle_beacon_event(event) # MessagingApi を渡さない
-
-@handler.add(AccountLinkEvent)
-def handle_account_link(event):
-    handle_account_link_event(event) # MessagingApi を渡さない
-
-@handler.add(ThingsEvent)
-def handle_things(event):
-    handle_things_event(event) # MessagingApi を渡さない
-
+        # ここを修正: eventオブジェクトから必要な情報を抽出して渡す
+        user_id = event.source.user_id
+        message_text = event.message.text
+        reply_token = event.reply_token
+        
+        process_message(user_id, message_text, reply_token, line_bot_api_messaging)
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
-
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))

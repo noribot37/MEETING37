@@ -1,57 +1,91 @@
 # config.py
+
 import os
-from enum import Enum
 
-# LINE Bot の設定
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
-
-# Google Sheets の設定
-# スプレッドシートの名前。Google Drive上で表示される名前と一致させてください。
-# 例: "MeetingSchedulerBot"
 class Config:
-    # 修正箇所: スプレッドシート名を "meeting_schedule_data" に変更
-    SPREADSHEET_NAME = os.getenv("GOOGLE_SHEETS_SPREADSHEET_NAME", "meeting_schedule_data") 
-    # 修正箇所: スケジュールシート名を "シート1" に変更
-    SCHEDULE_WORKSHEET_NAME = os.getenv("GOOGLE_SHEETS_SCHEDULE_WORKSHEET_NAME", "シート1")
-    # 修正箇所: 参加者リストシート名を "シート2" に変更
-    ATTENDEES_WORKSHEET_NAME = os.getenv("GOOGLE_SHEETS_ATTENDEES_WORKSHEET_NAME", "シート2")
+    # LINE Bot API設定
+    CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN')
+    CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET')
 
-# セッション管理のための状態定義
-class SessionState(Enum):
-    NONE = 0 # 初期状態またはセッション終了状態
+    # Google Sheets API設定 (お客様の指示に従い変数名を修正)
+    GOOGLE_SHEETS_CREDENTIALS = os.getenv('GOOGLE_SHEETS_CREDENTIALS') # サービスアカウントキーJSONの内容
+    GOOGLE_SHEETS_SPREADSHEET_NAME = "Bot自動化" # お客様のスプレッドシート名に合わせてください
+    GOOGLE_SHEETS_SCHEDULE_WORKSHEET_NAME = "シート1" # スケジュールシート名 (お客様の指示に従い"シート1"に)
+    GOOGLE_SHEETS_ATTENDEES_WORKSHEET_NAME = "参加者" # 参加者シート名
+    GOOGLE_SHEETS_KEY = os.getenv('GOOGLE_SHEETS_KEY') # 未使用の場合、削除またはコメントアウト可能
 
-    # スケジュール登録フロー
-    ASKING_TITLE = 1
-    ASKING_DATE = 2
-    ASKING_TIME = 3
-    ASKING_LOCATION = 4
-    ASKING_DETAIL = 5
-    ASKING_DEADLINE = 6
-    ASKING_DURATION = 7 # 所要時間の状態を追加
+    # セッション管理用キー
+    SESSION_DATA_KEY = 'current_session_data'
 
-    # スケジュール削除フロー
-    DELETING_SCHEDULE_DATE = 10
-    DELETING_SCHEDULE_TITLE = 11
-    AWAITING_DELETE_CONFIRMATION = 12
+    # デフォルト応答メッセージ
+    DEFAULT_REPLY_MESSAGE = "「スケジュール登録」「スケジュール一覧」「スケジュール編集」「スケジュール削除」「参加予定登録」「参加予定一覧」「参加予定編集」「参加者一覧」のいずれかのコマンドを入力してください。"
 
-    # スケジュール編集フロー
-    EDITING_SCHEDULE_DATE = 20
-    EDITING_SCHEDULE_TITLE = 21
-    SELECTING_EDIT_ITEM = 22
-    ASKING_NEW_VALUE = 23
+class SessionState:
+    _states = {}
 
-    # 出欠登録Q&Aフロー (新規追加または修正)
-    ASKING_ATTENDANCE_INTENTION = 29 # 出欠登録の意向確認待ち状態 # ← 追加済みであることを確認
-    ASKING_ATTENDANCE_TARGET_EVENT = 30 # どのイベントの出欠を登録するか尋ねる状態
-    ASKING_ATTENDANCE_STATUS = 31 # 出欠（〇△×）を尋ねる状態
-    # ASKING_REASON_IF_NO = 32 # ← この行を削除します
-    AWAITING_ATTENDANCE_CONFIRMATION = 33 # 出欠登録の最終確認状態
+    # 初期状態
+    NONE = 'none'
 
-    # 参加予定編集フロー (新規追加または修正)
-    EDITING_ATTENDANCE_DATE = 40 # 編集したい参加予定の日付を尋ねる状態
-    EDITING_ATTENDANCE_TITLE = 41 # 編集したい参加予定のタイトルを尋ねる状態
-    CONFIRM_ATTENDANCE_ACTION = 42 # キャンセルするか備考編集するか尋ねる状態
-    EDITING_ATTENDANCE_NOTE = 43 # 備考を尋ねる状態
-    ASK_ANOTHER_ATTENDANCE_EDIT = 44 # 他に編集したい予定があるか尋ねる状態
+    # スケジュール登録の状態
+    ASKING_SCHEDULE_DATE = 'asking_schedule_date'
+    ASKING_SCHEDULE_TITLE = 'asking_schedule_title'
+    ASKING_SCHEDULE_START_TIME = 'asking_schedule_start_time'
+    ASKING_SCHEDULE_END_TIME = 'asking_schedule_end_time'
+    ASKING_SCHEDULE_LOCATION = 'asking_schedule_location'
+    ASKING_SCHEDULE_PERSON_IN_CHARGE = 'asking_schedule_person_in_charge'
+    ASKING_SCHEDULE_CONTENT = 'asking_schedule_content'
+    ASKING_SCHEDULE_URL = 'asking_schedule_url'
+    ASKING_SCHEDULE_NOTES = 'asking_schedule_notes'
+    ASKING_CONFIRM_SCHEDULE_REGISTRATION = 'asking_confirm_schedule_registration'
+    ASKING_FOR_ANOTHER_SCHEDULE_REGISTRATION = 'asking_for_another_schedule_registration'
+
+    # スケジュール編集の状態
+    ASKING_SCHEDULE_EDIT_DATE = 'asking_schedule_edit_date'
+    ASKING_SCHEDULE_EDIT_TITLE = 'asking_schedule_edit_title'
+    ASKING_SCHEDULE_EDIT_FIELD = 'asking_schedule_edit_field'
+    ASKING_SCHEDULE_EDIT_VALUE = 'asking_schedule_edit_value'
+    ASKING_FOR_ANOTHER_SCHEDULE_EDIT = 'asking_for_another_schedule_edit'
+
+    # スケジュール削除の状態
+    ASKING_SCHEDULE_DELETE_DATE = 'asking_schedule_delete_date'
+    ASKING_SCHEDULE_DELETE_TITLE = 'asking_schedule_delete_title'
+    ASKING_CONFIRM_SCHEDULE_DELETE = 'asking_confirm_schedule_delete'
+    ASKING_FOR_NEXT_SCHEDULE_DELETION = 'asking_for_next_schedule_deletion'
+
+    # 参加予定登録の状態
+    ASKING_ATTENDEE_REGISTRATION_DATE = 'asking_attendee_registration_date'
+    ASKING_ATTENDEE_REGISTRATION_TITLE = 'asking_attendee_registration_title'
+    ASKING_ATTENDEE_STATUS = 'asking_attendee_status'
+    ASKING_ATTENDEE_NOTES = 'asking_attendee_notes'
+    ASKING_CONFIRM_ATTENDEE_REGISTRATION = 'asking_confirm_attendee_registration'
+    ASKING_FOR_ANOTHER_ATTENDEE_REGISTRATION = 'asking_for_another_attendee_registration'
+
+    # 参加予定編集の状態
+    ASKING_ATTENDEE_DATE = 'asking_attendee_date'
+    ASKING_ATTENDEE_TITLE = 'asking_attendee_title'
+    ASKING_ATTENDEE_CONFIRM_CANCEL = 'asking_attendee_confirm_cancel'
+    ASKING_ATTENDEE_EDIT_NOTES = 'asking_attendee_edit_notes'
+    ASKING_FOR_ANOTHER_ATTENDEE_EDIT = 'asking_for_another_attendee_edit'
+
+    # QA登録の状態
+    ASKING_QA_DATE = 'asking_qa_date'
+    ASKING_QA_TITLE = 'asking_qa_title'
+    ASKING_QA_ATTENDANCE = 'asking_qa_attendance'
+    ASKING_QA_NOTES = 'asking_qa_notes'
+    ASKING_CONFIRM_QA = 'asking_confirm_qa'
+
+    @classmethod
+    def get_state(cls, user_id):
+        return cls._states.get(user_id, {}).get('state', cls.NONE)
+
+    @classmethod
+    def set_state(cls, user_id, state):
+        if user_id not in cls._states:
+            cls._states[user_id] = {}
+        cls._states[user_id]['state'] = state
+
+    @classmethod
+    def delete_state(cls, user_id):
+        if user_id in cls._states:
+            del cls._states[user_id]['state']
 
