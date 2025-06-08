@@ -1,5 +1,3 @@
-# line_handlers/message_processors.py
-
 from linebot.v3.messaging import MessagingApi, ReplyMessageRequest, TextMessage
 
 from config import Config, SessionState
@@ -8,6 +6,9 @@ from line_handlers.commands import (
     attendance_commands,
     # qa_commands # QAコマンドは現在コメントアウトされているが、今後使用する場合は追加
 )
+# attendance_qnaモジュールをインポート
+from line_handlers.qna import attendance_qna
+
 # utils/session_managerからセッション操作関数をインポート
 from utils.session_manager import get_user_session_data, set_user_session_data, delete_user_session_data
 
@@ -60,7 +61,7 @@ def process_message(user_id: str, message_text: str, reply_token: str, line_bot_
                 )
             )
     # スケジュール登録
-    elif current_state.startswith("asking_schedule_"):
+    elif current_state.startswith("asking_schedule_") and current_state != SessionState.ASKING_ATTENDEE_REGISTRATION_CONFIRMATION:
         schedule_commands.process_schedule_registration_step(user_id, message_text, reply_token, line_bot_api_messaging)
     # スケジュール編集
     elif current_state.startswith("asking_schedule_edit_"):
@@ -68,6 +69,9 @@ def process_message(user_id: str, message_text: str, reply_token: str, line_bot_
     # スケジュール削除
     elif current_state.startswith("asking_schedule_delete_"):
         schedule_commands.process_schedule_deletion_step(user_id, message_text, reply_token, line_bot_api_messaging)
+    # 参加希望登録の確認
+    elif current_state == SessionState.ASKING_ATTENDEE_REGISTRATION_CONFIRMATION:
+        attendance_qna.handle_attendee_registration_confirmation(user_id, message_text, reply_token, line_bot_api_messaging)
     # 参加予定登録
     elif current_state.startswith("asking_attendee_registration_"):
         attendance_commands.process_attendee_registration_step(user_id, message_text, reply_token, line_bot_api_messaging)
@@ -87,4 +91,3 @@ def process_message(user_id: str, message_text: str, reply_token: str, line_bot_
                 messages=[TextMessage(text="不明な状態です。セッションをリセットしました。\n" + Config.DEFAULT_REPLY_MESSAGE)]
             )
         )
-
