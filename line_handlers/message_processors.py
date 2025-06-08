@@ -6,24 +6,20 @@ from config import Config, SessionState
 from line_handlers.commands import (
     schedule_commands,
     attendance_commands,
-    # qa_commands # QAコマンドは現在コメントアウトされているが、今後使用する場合は追加
 )
-# attendance_qnaモジュールをインポート
 from line_handlers.qna import attendance_qna
 
-# utils/session_managerからセッション操作関数をインポート
 from utils.session_manager import get_user_session_data, set_user_session_data, delete_user_session_data
 
-# LINE Messaging APIクライアントの初期化（実際はメインファイルで初期化して渡されることを想定）
-# messaging_api = MessagingApi(ChannelAccessToken(Config.CHANNEL_ACCESS_TOKEN))
 
+def process_message(user_id: str, message_text: str, reply_token: str, user_display_name: str, line_bot_api_messaging: MessagingApi):
+    print(f"DEBUG: process_message called. User ID: {user_id}, Message: '{message_text}', State: {SessionState.get_state(user_id)}")
 
-def process_message(user_id: str, message_text: str, reply_token: str, line_bot_api_messaging: MessagingApi):
     current_state = SessionState.get_state(user_id)
     session_data = get_user_session_data(user_id, Config.SESSION_DATA_KEY) or {}
 
-    # 終了コマンドのチェック（常に優先）
     if message_text == "終了":
+        print(f"DEBUG: '終了' command received for user {user_id}")
         SessionState.set_state(user_id, SessionState.NONE)
         delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
         line_bot_api_messaging.reply_message(
@@ -34,64 +30,67 @@ def process_message(user_id: str, message_text: str, reply_token: str, line_bot_
         )
         return
 
-    # 状態に応じた処理
     if current_state == SessionState.NONE:
-        # コマンドの振り分け
+        print(f"DEBUG: Current state is NONE for user {user_id}")
         if message_text == "スケジュール登録":
+            print("DEBUG: Calling start_schedule_registration")
             schedule_commands.start_schedule_registration(user_id, reply_token, line_bot_api_messaging)
         elif message_text == "スケジュール一覧":
+            print("DEBUG: Calling list_schedules")
             schedule_commands.list_schedules(user_id, reply_token, line_bot_api_messaging)
         elif message_text == "スケジュール編集":
+            print("DEBUG: Calling start_schedule_edit")
             schedule_commands.start_schedule_edit(user_id, reply_token, line_bot_api_messaging)
         elif message_text == "スケジュール削除":
+            print("DEBUG: Calling start_schedule_deletion")
             schedule_commands.start_schedule_deletion(user_id, reply_token, line_bot_api_messaging)
         elif message_text == "参加予定登録":
-            # 独立した「参加予定登録」コマンドとして attendance_qna の開始
+            print("DEBUG: Calling start_attendance_qa")
             attendance_qna.start_attendance_qa(
                 user_id,
+                user_display_name,
                 reply_token,
                 line_bot_api_messaging
             )
         elif message_text == "参加予定一覧":
+            print("DEBUG: Calling list_user_attendees")
             attendance_commands.list_user_attendees(user_id, reply_token, line_bot_api_messaging)
         elif message_text == "参加予定編集":
+            print("DEBUG: Calling start_attendee_edit")
             attendance_commands.start_attendee_edit(user_id, reply_token, line_bot_api_messaging)
         elif message_text == "参加者一覧":
+            print("DEBUG: Calling list_attendees")
             attendance_commands.list_attendees(user_id, reply_token, line_bot_api_messaging)
-        # elif message_text == "QA登録": # QA機能が有効な場合
-        #     qa_commands.start_qa_registration(user_id, reply_token, line_bot_api_messaging)
         else:
+            print("DEBUG: Default reply message")
             line_bot_api_messaging.reply_message(
                 ReplyMessageRequest(
                     reply_token=reply_token,
                     messages=[TextMessage(text=Config.DEFAULT_REPLY_MESSAGE)]
                 )
             )
-    # スケジュール登録
     elif current_state.startswith("asking_schedule_") and current_state != SessionState.ASKING_ATTENDEE_REGISTRATION_CONFIRMATION:
+        print(f"DEBUG: Processing schedule registration/edit/delete step. State: {current_state}")
         schedule_commands.process_schedule_registration_step(user_id, message_text, reply_token, line_bot_api_messaging)
-    # スケジュール編集
     elif current_state.startswith("asking_schedule_edit_"):
+        print(f"DEBUG: Processing schedule edit step. State: {current_state}")
         schedule_commands.process_schedule_edit_step(user_id, message_text, reply_token, line_bot_api_messaging)
-    # スケジュール削除
     elif current_state.startswith("asking_schedule_delete_"):
+        print(f"DEBUG: Processing schedule delete step. State: {current_state}")
         schedule_commands.process_schedule_deletion_step(user_id, message_text, reply_token, line_bot_api_messaging)
 
-    # ★ここから修正追加: スケジュール一覧からの参加希望登録「はい/いいえ」の応答処理
-    # attendance_qna.py のセッション管理を統一したので、引数は user_id, reply_token, line_bot_api_messaging のみ
     elif current_state == SessionState.ASKING_ATTENDEE_REGISTRATION_CONFIRMATION:
+        print(f"DEBUG: Processing attendee registration confirmation. Message: {message_text}")
         if message_text == "はい":
-            # 「はい」と答えたら、attendance_qnaのQ&Aフローを開始する
-            # schedule_commandsでunregistered_eventsをsession_dataに格納済みなので、
-            # start_attendance_qaはuser_idとAPIクライアントだけでOK
-            # attendance_qna.py内でsession_dataからunregistered_eventsを取得するように修正済み前提
+            print("DEBUG: Confirmation 'はい', calling start_attendance_qa")
             attendance_qna.start_attendance_qa(
                 user_id,
+                user_display_name,
                 reply_token,
                 line_bot_api_messaging
             )
         elif message_text == "いいえ":
-            # 「いいえ」と答えたらセッションをリセットし、終了メッセージ
+            print("DEBUG: Confirmation 'いいえ', ending session")
             SessionState.set_state(user_id, SessionState.NONE)
             delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
             line_bot_api_messaging.reply_message(
@@ -101,7 +100,7 @@ def process_message(user_id: str, message_text: str, reply_token: str, line_bot_
                 )
             )
         else:
-            # 予期せぬ入力の場合
+            print("DEBUG: Invalid confirmation input")
             line_bot_api_messaging.reply_message(
                 ReplyMessageRequest(
                     reply_token=reply_token,
@@ -114,29 +113,22 @@ def process_message(user_id: str, message_text: str, reply_token: str, line_bot_
                     )]
                 )
             )
-    # 参加予定登録Q&Aの応答処理 (元々あったブロックを修正)
-    # attendance_qna.py のセッション管理を統一したので、引数は user_id, user_display_name, message_text, reply_token, line_bot_api_messaging のみ
     elif current_state == SessionState.ASKING_ATTENDANCE_STATUS:
-        # user_display_name は main.pyから取得して渡す必要があります。
-        # ここでは仮の値として 'Unknown User' を設定しますが、本番環境では適切に取得してください。
+        print(f"DEBUG: Processing attendance status. Message: {message_text}")
         attendance_qna.handle_attendance_qa_response(
             user_id,
-            "Unknown User", # TODO: main.pyから実際のユーザー名を取得して渡す
             message_text,
             reply_token,
             line_bot_api_messaging
         )
-    # 参加予定登録 (これはattendance_qnaとは別のフローの可能性があります)
     elif current_state.startswith("asking_attendee_registration_"):
+        print(f"DEBUG: Processing attendee registration step. State: {current_state}")
         attendance_commands.process_attendee_registration_step(user_id, message_text, reply_token, line_bot_api_messaging)
-    # 参加予定編集
     elif current_state.startswith("asking_attendee_"):
+        print(f"DEBUG: Processing attendee edit step. State: {current_state}")
         attendance_commands.process_attendee_edit_step(user_id, message_text, reply_token, line_bot_api_messaging)
-    # QA登録
-    # elif current_state.startswith("asking_qa_"): # QA機能が有効な場合
-    #     qa_commands.process_qa_registration_step(user_id, message_text, reply_token, line_bot_api_messaging)
     else:
-        # 未定義の状態の場合、セッションをリセット
+        print(f"DEBUG: Unknown state encountered: {current_state}. Resetting session.")
         SessionState.set_state(user_id, SessionState.NONE)
         delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
         line_bot_api_messaging.reply_message(
@@ -145,4 +137,3 @@ def process_message(user_id: str, message_text: str, reply_token: str, line_bot_
                 messages=[TextMessage(text="不明な状態です。セッションをリセットしました。\n" + Config.DEFAULT_REPLY_MESSAGE)]
             )
         )
-

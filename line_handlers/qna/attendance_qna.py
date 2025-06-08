@@ -3,7 +3,7 @@
 import os
 from datetime import datetime
 import re
-import pandas as pd # 追加: pandasをインポート
+import pandas as pd 
 
 from linebot.v3.messaging import (
     MessagingApi,
@@ -13,21 +13,13 @@ from linebot.v3.messaging import (
 from linebot.v3.messaging.models import QuickReply, QuickReplyItem, MessageAction
 
 from config import Config, SessionState
-# get_all_records, update_or_add_attendee, get_attendees_for_user を utils.py からインポート
 from google_sheets.utils import get_all_records, update_or_add_attendee, get_attendees_for_user
 
-# utils/session_managerからセッション操作関数をインポート
 from utils.session_manager import get_user_session_data, set_user_session_data, delete_user_session_data
 
 
-# start_attendance_qa関数の修正
-def start_attendance_qa(user_id, reply_token, line_bot_api_messaging: MessagingApi): # user_sessions 引数を削除
-    """
-    「参加予定登録」コマンドの開始処理。
-    ユーザーに未登録のイベントを提示し、参加予定を尋ねる。
-    """
+def start_attendance_qa(user_id, user_display_name, reply_token, line_bot_api_messaging: MessagingApi):
     try:
-        # 修正箇所: Config.SCHEDULE_WORKSHEET_NAME を Config.GOOGLE_SHEETS_SCHEDULE_WORKSHEET_NAME に変更
         all_meetings_df = get_all_records(Config.GOOGLE_SHEETS_SCHEDULE_WORKSHEET_NAME)
 
         if all_meetings_df.empty:
@@ -37,47 +29,37 @@ def start_attendance_qa(user_id, reply_token, line_bot_api_messaging: MessagingA
                     messages=[TextMessage(text="現在、登録されているスケジュールはありません。\nまずは「スケジュール登録」でイベントを作成してください。")]
                 )
             )
-            # セッションデータをクリア
             delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
-            SessionState.set_state(user_id, SessionState.NONE) # 状態もリセット
+            SessionState.set_state(user_id, SessionState.NONE)
             return
 
-        # 追加: 日付列をPandasのdatetime型に変換（エラーを無視して変換できないものはNaTとする）
         all_meetings_df['日付'] = pd.to_datetime(all_meetings_df['日付'], errors='coerce')
 
-
-        # ユーザーの既存の参加予定を取得
         user_attendees = get_attendees_for_user(user_id)
-        # 追加: attendance_qna.py 内で、attended_events のキーとして `Timestamp` と `str` が混在しないように調整
-        # user_attendees の '日付' も datetime オブジェクトに変換して比較する
         processed_attended_events = set()
         for att in user_attendees:
-            att_date_str = att.get('日付')
-            att_title = att.get('タイトル')
-            if att_date_str and att_title:
-                try:
-                    # strptime() で文字列から datetime オブジェクトに変換し、Timestamp と比較できるようにする
-                    att_date_obj = datetime.strptime(att_date_str, '%Y/%m/%d').date()
-                    processed_attended_events.add((att_date_obj, att_title))
-                except ValueError:
-                    print(f"DEBUG: Skipping invalid date format in user_attendees: {att_date_str}")
-                    continue
+            if len(att) >= 2:
+                att_title = att[0]
+                att_date_str = att[1]
+                if att_date_str and att_title:
+                    try:
+                        att_date_obj = datetime.strptime(att_date_str, '%Y/%m/%d').date()
+                        processed_attended_events.add((att_date_obj, att_title))
+                    except ValueError:
+                        print(f"DEBUG: Skipping invalid date format in user_attendees: {att_date_str}")
+                        continue
 
-        # 未登録のスケジュールのみをフィルタリング
         unregistered_meetings = []
         for index, meeting_series in all_meetings_df.iterrows():
             meeting = meeting_series.to_dict()
-            date_timestamp = meeting.get('日付') # ここはすでにTimestampかNaT
+            date_timestamp = meeting.get('日付')
             title = meeting.get('タイトル')
 
-            # 日付が有効なTimestampオブジェクトであり、タイトルも存在することを確認
-            if pd.notna(date_timestamp) and title: # 修正: pd.notna()でNaTをチェック
-                # Timestampオブジェクトの日付部分だけを取り出して比較
-                if (date_timestamp.date(), title) not in processed_attended_events: # .date() で日付部分のみ比較
-                    unregistered_meetings.append((date_timestamp, meeting)) # Timestampオブジェクトのまま追加
+            if pd.notna(date_timestamp) and title:
+                if (date_timestamp.date(), title) not in processed_attended_events:
+                    unregistered_meetings.append((date_timestamp, meeting))
 
-        # 日付でソートし、最も近い未登録スケジュールを抽出
-        unregistered_meetings.sort(key=lambda x: x[0]) # Timestampオブジェクトでそのままソート可能
+        unregistered_meetings.sort(key=lambda x: x[0])
 
         if not unregistered_meetings:
             line_bot_api_messaging.reply_message(
@@ -86,28 +68,25 @@ def start_attendance_qa(user_id, reply_token, line_bot_api_messaging: MessagingA
                     messages=[TextMessage(text="現在、登録可能な未参加予定のスケジュールはありません。\n「参加予定一覧」で現在の参加予定状況を確認できます。")]
                 )
             )
-            # セッションデータをクリア
             delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
-            SessionState.set_state(user_id, SessionState.NONE) # 状態もリセット
+            SessionState.set_state(user_id, SessionState.NONE)
             return
 
-        # 次に処理すべきイベントをセッションに保存
-        # 直接set_user_session_dataを使用
         session_data = {
-            'state': SessionState.ASKING_ATTENDANCE_STATUS, # この状態はattendance_qna内で管理される
+            'state': SessionState.ASKING_ATTENDANCE_STATUS,
             'data': {
                 'unregistered_events': [
-                    # ここでdatetimeオブジェクトを文字列に変換して保存
                     {'date': meeting[0].strftime('%Y/%m/%d'), 'title': meeting[1].get('タイトル')}
                     for meeting in unregistered_meetings
                 ],
-                'current_event_index': 0 # 現在処理中のイベントのインデックスを追加
+                'current_event_index': 0,
+                'user_id': user_id,
+                'user_display_name': user_display_name
             }
         }
         set_user_session_data(user_id, Config.SESSION_DATA_KEY, session_data)
-        SessionState.set_state(user_id, SessionState.ASKING_ATTENDANCE_STATUS) # Globalな状態も設定
+        SessionState.set_state(user_id, SessionState.ASKING_ATTENDANCE_STATUS)
 
-        # 最初の未登録イベントを取得
         current_event = session_data['data']['unregistered_events'][session_data['data']['current_event_index']]
 
         response_text = f"こちらのイベントの参加予定を登録します。\n\n{current_event['date']} の「{current_event['title']}」\n\n参加予定を教えてください（〇, △, ×）"
@@ -136,21 +115,13 @@ def start_attendance_qa(user_id, reply_token, line_bot_api_messaging: MessagingA
                 messages=[TextMessage(text=error_msg)]
             )
         )
-        # エラー発生時もセッションをリセット
         delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
         SessionState.set_state(user_id, SessionState.NONE)
 
 
-# handle_attendance_qa_response関数の修正
-# user_sessionsとcurrent_session引数を削除し、session_managerから取得
-def handle_attendance_qa_response(user_id, user_display_name, user_message, reply_token, line_bot_api_messaging: MessagingApi):
-    """
-    参加予定登録Q&Aフロー中のユーザー応答を処理する。
-    """
-    # セッションデータをsession_managerから直接取得
+def handle_attendance_qa_response(user_id, user_message, reply_token, line_bot_api_messaging: MessagingApi):
     current_session_data = get_user_session_data(user_id, Config.SESSION_DATA_KEY)
     if not current_session_data:
-        # セッションデータがない場合はエラーメッセージを返して終了
         line_bot_api_messaging.reply_message(
             ReplyMessageRequest(
                 reply_token=reply_token,
@@ -160,9 +131,19 @@ def handle_attendance_qa_response(user_id, user_display_name, user_message, repl
         SessionState.set_state(user_id, SessionState.NONE)
         return
 
-    state = SessionState.get_state(user_id) # グローバルな状態を取得
+    state = SessionState.get_state(user_id)
     data = current_session_data.get('data', {})
     messages = []
+
+    session_user_id = data.get('user_id')
+    session_user_display_name = data.get('user_display_name')
+
+    if not session_user_id or not session_user_display_name:
+        messages.append(TextMessage(text="ユーザー情報の取得に失敗しました。\n「参加予定登録」と入力して最初からやり直してください。"))
+        delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
+        SessionState.set_state(user_id, SessionState.NONE)
+        line_bot_api_messaging.reply_message(ReplyMessageRequest(reply_token=reply_token, messages=messages))
+        return
 
     print(f"DEBUG: Handling attendance Q&A. State: {state}, Message: {user_message}")
 
@@ -187,19 +168,18 @@ def handle_attendance_qa_response(user_id, user_display_name, user_message, repl
                 success, msg = update_or_add_attendee(
                     date=event_date,
                     title=event_title,
-                    user_id=user_id,
-                    username=user_display_name,
+                    user_id=session_user_id,
+                    username=session_user_display_name,
                     attendance_status=status,
-                    notes=data.get('attendance_remarks', '') # 備考は空文字として初期化、または既存のデータがあればそれを使用
+                    notes=data.get('attendance_remarks', '')
                 )
                 if success:
                     messages.append(TextMessage(text=f"{event_date} の「{event_title}」の参加予定を登録しました！"))
 
-                    # 次のイベントへインデックスを進める
                     next_event_index = current_event_index + 1
                     if next_event_index < len(unregistered_events):
                         data['current_event_index'] = next_event_index
-                        set_user_session_data(user_id, Config.SESSION_DATA_KEY, current_session_data) # セッションデータを更新
+                        set_user_session_data(user_id, Config.SESSION_DATA_KEY, current_session_data)
 
                         next_event = unregistered_events[next_event_index]
                         messages.append(TextMessage(
@@ -213,7 +193,7 @@ def handle_attendance_qa_response(user_id, user_display_name, user_message, repl
                     else:
                         messages.append(TextMessage(text="全ての未登録イベントの参加予定登録が完了しました！\nありがとうございました。"))
                         delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
-                        SessionState.set_state(user_id, SessionState.NONE) # 状態をリセット
+                        SessionState.set_state(user_id, SessionState.NONE)
 
                 else:
                     messages.append(TextMessage(text=f"参加予定登録中にエラーが発生しました: {msg}"))

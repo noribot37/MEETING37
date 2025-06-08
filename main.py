@@ -1,19 +1,15 @@
-# main.py
-
 import os
 import sys
 from flask import Flask, request, abort
 from linebot.v3 import WebhookHandler
 from linebot.v3.messaging import Configuration, ApiClient, MessagingApi
+# Profileクラスのインポートは不要なため削除 (エラー回避のため)
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
-# sys.path.append(os.path.join(os.path.dirname(__file__), 'line_handlers'))
-
-from line_handlers.message_processors import process_message # 修正: process_message をインポート
+from line_handlers.message_processors import process_message
 
 app = Flask(__name__)
 
-# 環境変数からLINE Developersの情報を取得
 CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN')
 CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET')
 
@@ -24,7 +20,6 @@ if CHANNEL_SECRET is None:
     print('Specify LINE_CHANNEL_SECRET as environment variable.')
     sys.exit(1)
 
-# LINE Bot SDKの設定
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
@@ -42,16 +37,25 @@ def callback():
     return 'OK'
 
 @handler.add(MessageEvent, message=TextMessageContent)
-def handle_message(event: MessageEvent): # eventの型ヒントを追加
+def handle_message(event: MessageEvent):
     with ApiClient(configuration) as api_client:
         line_bot_api_messaging = MessagingApi(api_client)
 
-        # ここを修正: eventオブジェクトから必要な情報を抽出して渡す
         user_id = event.source.user_id
         message_text = event.message.text
         reply_token = event.reply_token
-        
-        process_message(user_id, message_text, reply_token, line_bot_api_messaging)
+        user_display_name = "名無し" # デフォルト値
+
+        # ユーザーのプロフィール情報を取得
+        try:
+            profile_obj = line_bot_api_messaging.get_profile(user_id)
+            user_display_name = profile_obj.display_name
+            app.logger.info(f"DEBUG: Fetched profile for {user_id}: {user_display_name}")
+        except Exception as e:
+            app.logger.warning(f"WARNING: Could not get profile for user {user_id}: {e}")
+            # プロフィールが取得できない場合も処理を継続
+
+        process_message(user_id, message_text, reply_token, user_display_name, line_bot_api_messaging)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
