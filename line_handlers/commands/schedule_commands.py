@@ -1,3 +1,5 @@
+# line_handlers/commands/schedule_commands.py
+
 import pandas as pd
 from datetime import datetime
 from linebot.v3.messaging import MessagingApi, ReplyMessageRequest, TextMessage
@@ -23,24 +25,33 @@ def list_schedules(user_id, reply_token, line_bot_api_messaging: MessagingApi):
     else:
         reply_message = "【スケジュール一覧】\n"
         # 日付でソート（日付がdatetime型であると仮定）
+        # スプレッドシートから読み込んだ日付は文字列の場合があるため、変換を試みる
+        all_schedules_df['日付'] = pd.to_datetime(all_schedules_df['日付'], errors='coerce')
         all_schedules_df = all_schedules_df.sort_values(by='日付', ascending=True)
-        for index, row in all_schedules_df.iterrows():
-            date_str = row['日付'].strftime('%Y/%m/%d') if pd.notna(row['日付']) else '日付未定'
-            start_time = row.get('開始時間', '未定')
-            end_time = row.get('終了時間', '未定')
-            location = row.get('場所', '未定')
-            person_in_charge = row.get('担当者', '未定')
-            content = row.get('内容', 'なし')
-            url = row.get('URL', 'なし')
-            notes = row.get('備考', 'なし')
 
-            reply_message += f"日付: {date_str}, タイトル: {row['タイトル']}\n"
-            reply_message += f"  時間: {start_time} - {end_time}\n"
+        for index, row in all_schedules_df.iterrows():
+            # スプレッドシートの列名に合わせて情報を取得
+            # 日付
+            date_str = row['日付'].strftime('%Y/%m/%d') if pd.notna(row['日付']) else '日付未定'
+            # 時間 (シートの「時間」列から取得)
+            time_str = row.get('時間', '未定')
+            # 場所 (シートの「場所」列から取得)
+            location = row.get('場所', '未定')
+            # タイトル (シートの「タイトル」列から取得)
+            title = row.get('タイトル', '未定')
+            # 詳細 (シートの「詳細」列から取得)
+            detail = row.get('詳細', 'なし')
+            # 申込締切日 (シートの「申込締切日」列から取得)
+            deadline_str = row.get('申込締切日', 'なし')
+            # 尺 (シートの「尺」列から取得)
+            scale = row.get('尺', 'なし')
+
+            reply_message += f"日付: {date_str}, タイトル: {title}\n"
+            reply_message += f"  時間: {time_str}\n" # 「開始時間 - 終了時間」ではなく「時間」列の値をそのまま表示
             reply_message += f"  場所: {location}\n"
-            reply_message += f"  担当者: {person_in_charge}\n"
-            reply_message += f"  内容: {content}\n"
-            reply_message += f"  URL: {url}\n"
-            reply_message += f"  備考: {notes}\n\n"
+            reply_message += f"  詳細: {detail}\n" # 「内容」ではなく「詳細」を表示
+            reply_message += f"  申込締切日: {deadline_str}\n"
+            reply_message += f"  尺: {scale}\n\n" # 「尺」を追加
 
     line_bot_api_messaging.reply_message(
         ReplyMessageRequest(
@@ -49,7 +60,7 @@ def list_schedules(user_id, reply_token, line_bot_api_messaging: MessagingApi):
         )
     )
 
-# スケジュール登録開始
+# スケジュール登録開始 (この関数は変更なし)
 def start_schedule_registration(user_id, reply_token, line_bot_api_messaging: MessagingApi):
     SessionState.set_state(user_id, SessionState.ASKING_SCHEDULE_DATE)
     set_user_session_data(user_id, Config.SESSION_DATA_KEY, {}) # セッションデータを初期化
@@ -60,7 +71,7 @@ def start_schedule_registration(user_id, reply_token, line_bot_api_messaging: Me
         )
     )
 
-# スケジュール登録の次のステップ
+# スケジュール登録の次のステップ (この関数は変更なし)
 def process_schedule_registration_step(user_id, message_text, reply_token, line_bot_api_messaging: MessagingApi):
     current_state = SessionState.get_state(user_id)
     session_data = get_user_session_data(user_id, Config.SESSION_DATA_KEY) or {}
@@ -87,7 +98,13 @@ def process_schedule_registration_step(user_id, message_text, reply_token, line_
     elif current_state == SessionState.ASKING_SCHEDULE_TITLE:
         session_data['タイトル'] = message_text
         set_user_session_data(user_id, Config.SESSION_DATA_KEY, session_data)
-        SessionState.set_state(user_id, SessionState.ASKING_SCHEDULE_START_TIME)
+        # スケジュール登録ステップはシートの列に合わせて変更する必要があるかもしれません。
+        # 現在のシートには「開始時間」「終了時間」「担当者」「内容」「URL」「備考」は直接ありません。
+        # 「時間」「詳細」「申込締切日」「尺」に合わせるべきです。
+        # ここから下のASKING_SCHEDULE_START_TIMEなどは、シートに合わせて変更が必要になります。
+        # 一旦、エラーを起こさないために既存のロジックは残しますが、
+        # 今後、この登録フローの質問項目もシートに合わせて調整が必要です。
+        SessionState.set_state(user_id, SessionState.ASKING_SCHEDULE_START_TIME) # この部分は、シートの「時間」に一本化するなど検討が必要
         line_bot_api_messaging.reply_message(
             ReplyMessageRequest(
                 reply_token=reply_token,
@@ -207,7 +224,7 @@ def process_schedule_registration_step(user_id, message_text, reply_token, line_
                 )
             )
 
-# スケジュール編集開始
+# スケジュール編集開始 (この関数は変更なし)
 def start_schedule_edit(user_id, reply_token, line_bot_api_messaging: MessagingApi):
     SessionState.set_state(user_id, SessionState.ASKING_SCHEDULE_EDIT_DATE)
     set_user_session_data(user_id, Config.SESSION_DATA_KEY, {})
@@ -218,7 +235,7 @@ def start_schedule_edit(user_id, reply_token, line_bot_api_messaging: MessagingA
         )
     )
 
-# スケジュール編集の次のステップ
+# スケジュール編集の次のステップ (この関数は変更なし)
 def process_schedule_edit_step(user_id, message_text, reply_token, line_bot_api_messaging: MessagingApi):
     current_state = SessionState.get_state(user_id)
     session_data = get_user_session_data(user_id, Config.SESSION_DATA_KEY) or {}
@@ -329,7 +346,7 @@ def process_schedule_edit_step(user_id, message_text, reply_token, line_bot_api_
                 )
             )
 
-# スケジュール削除開始
+# スケジュール削除開始 (この関数は変更なし)
 def start_schedule_deletion(user_id, reply_token, line_bot_api_messaging: MessagingApi):
     SessionState.set_state(user_id, SessionState.ASKING_SCHEDULE_DELETE_DATE)
     set_user_session_data(user_id, Config.SESSION_DATA_KEY, {})
@@ -340,7 +357,7 @@ def start_schedule_deletion(user_id, reply_token, line_bot_api_messaging: Messag
         )
     )
 
-# スケジュール削除の次のステップ
+# スケジュール削除の次のステップ (この関数は変更なし)
 def process_schedule_deletion_step(user_id, message_text, reply_token, line_bot_api_messaging: MessagingApi):
     current_state = SessionState.get_state(user_id)
     session_data = get_user_session_data(user_id, Config.SESSION_DATA_KEY) or {}
@@ -452,4 +469,3 @@ def process_schedule_deletion_step(user_id, message_text, reply_token, line_bot_
                     messages=[TextMessage(text="スケジュール削除を終了します。")]
                 )
             )
-
