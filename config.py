@@ -79,6 +79,13 @@ class SessionState:
     # スケジュール一覧からの参加希望確認 (list_schedulesから遷移) - これを追加！
     ASKING_ATTENDEE_REGISTRATION_CONFIRMATION = "asking_attendee_registration_confirmation" 
 
+    # ↓↓↓ ここから追記 ↓↓↓
+    # attendance_qna.py で使用される状態
+    ASKING_ATTENDANCE_STATUS = "asking_attendance_status" # 〇△×の回答待ち
+    ASKING_ATTENDANCE_REMARKS = "asking_attendance_remarks" # 備考の回答待ち
+    ASKING_NEXT_ATTENDANCE_REGISTRATION = "asking_next_attendance_registration" # 次の予定があるかどうかの確認
+    # ↑↑↑ ここまで追記 ↑↑↑
+
     # QA登録 (必要であれば追加)
     # ASKING_QA_QUESTION = "asking_qa_question"
     # ASKING_QA_ANSWER = "asking_qa_answer"

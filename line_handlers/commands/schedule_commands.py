@@ -1,3 +1,5 @@
+# line_handlers/commands/schedule_commands.py
+
 import pandas as pd
 from datetime import datetime
 # 修正箇所: QuickReplyButton を QuickReplyItem に変更し、全て linebot.v3.messaging からインポート
@@ -17,19 +19,57 @@ from utils.session_manager import get_user_session_data, set_user_session_data, 
 # スケジュール一覧表示
 def list_schedules(user_id, reply_token, line_bot_api_messaging: MessagingApi):
     # Config.GOOGLE_SHEETS_SCHEDULE_WORKSHEET_NAME を使用
-    all_schedules_df = get_all_records(Config.GOOGLE_SHEETS_SCHEDULE_WORKSHEET_NAME)
+    all_schedules_df = get_all_records(Config.GOOGLE_SHEETS_SCHEDULE_WORKSHEET_NAME) # ★修正: 変数名を修正
 
     messages_to_send = [] # メッセージリストを初期化
 
     if all_schedules_df.empty:
         reply_message_text = "登録されているスケジュールはありません。"
         messages_to_send.append(TextMessage(text=reply_message_text))
+        # スケジュールがない場合はセッションをリセット
+        SessionState.set_state(user_id, SessionState.NONE)
+        delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
     else:
         reply_message_text = "【スケジュール一覧】\n"
         # 日付でソート（日付がdatetime型であると仮定）
         # スプレッドシートから読み込んだ日付は文字列の場合があるため、変換を試みる
         all_schedules_df['日付'] = pd.to_datetime(all_schedules_df['日付'], errors='coerce')
         all_schedules_df = all_schedules_df.sort_values(by='日付', ascending=True)
+
+        # 未登録のスケジュールを抽出してセッションに保存するための準備
+        # ここでは、user_attendees を取得する必要があるが、それは attendance_qna.py で行うべき。
+        # list_schedules の目的は「スケジュール一覧表示」と「参加希望登録の確認」であるため、
+        # 未登録イベントのフィルタリングは attendance_qna.py に任せるのが適切。
+        # ただし、現状の attendance_qna.py は get_all_records を再度呼び出しているため、
+        # ここで取得した all_schedules_df をセッションに保存して引き継ぐ方が効率的。
+        # しかし、DataFrameをそのままセッションに保存するのは非効率的で、JSONシリアライズも必要になる。
+        # 簡易的なデータ（日付とタイトルのみ）を渡すことを検討。
+
+        # ここで、ユーザーの未参加イベントを抽出し、セッションに保存するロジックを追加
+        # attendance_qna.py の start_attendance_qa と同様のロジックを使用
+        # ただし、ここでは quick_reply を出すだけで、unregistered_meetings は attendance_qna.py に任せる
+
+        # 参加希望登録の確認メッセージとクイックリプライを追加
+        # セッション状態を更新
+        SessionState.set_state(user_id, SessionState.ASKING_ATTENDEE_REGISTRATION_CONFIRMATION) # 新しい状態を設定
+
+        # ★ここから修正追加: 未登録イベントのデータをセッションに保存する準備
+        # `get_all_records` はすでに実行済みなので、結果のDataFrameを使用
+        # DataFrameの各行を辞書としてイテレートし、日付とタイトルを抽出
+        unregistered_events_for_session = []
+        for index, meeting_series in all_schedules_df.iterrows():
+            meeting = meeting_series.to_dict() # Seriesをdictに変換
+            date = meeting.get('日付')
+            title = meeting.get('タイトル')
+            if pd.notna(date) and title: # 日付がNaNでないことを確認
+                unregistered_events_for_session.append({'date': date.strftime('%Y/%m/%d'), 'title': title}) # datetimeを文字列に変換
+
+        # 現在のセッションデータを取得し、unregistered_eventsを追加
+        session_data = get_user_session_data(user_id, Config.SESSION_DATA_KEY) or {}
+        session_data['unregistered_events'] = unregistered_events_for_session
+        session_data['logic_path'] = 'list_schedules_flow' # フローを識別
+        set_user_session_data(user_id, Config.SESSION_DATA_KEY, session_data)
+        # ★修正追加ここまで
 
         for index, row in all_schedules_df.iterrows():
             # スプレッドシートの列名に合わせて情報を取得
@@ -50,15 +90,11 @@ def list_schedules(user_id, reply_token, line_bot_api_messaging: MessagingApi):
 
         messages_to_send.append(TextMessage(text=reply_message_text))
 
-        # 参加希望登録の確認メッセージとクイックリプライを追加
-        # セッション状態を更新
-        SessionState.set_state(user_id, SessionState.ASKING_ATTENDEE_REGISTRATION_CONFIRMATION) # 新しい状態を設定
 
         quick_reply_message = TextMessage(
             text="続けて参加希望の登録をしますか？",
             quick_reply=QuickReply(
                 items=[
-                    # QuickReplyButton を QuickReplyItem に変更
                     QuickReplyItem(action=MessageAction(label="はい", text="はい")),
                     QuickReplyItem(action=MessageAction(label="いいえ", text="いいえ"))
                 ]
@@ -74,7 +110,7 @@ def list_schedules(user_id, reply_token, line_bot_api_messaging: MessagingApi):
     )
 
 
-# スケジュール登録開始
+# スケジュール登録開始 (変更なし)
 def start_schedule_registration(user_id, reply_token, line_bot_api_messaging: MessagingApi):
     SessionState.set_state(user_id, SessionState.ASKING_SCHEDULE_DATE)
     set_user_session_data(user_id, Config.SESSION_DATA_KEY, {}) # セッションデータを初期化
@@ -85,7 +121,7 @@ def start_schedule_registration(user_id, reply_token, line_bot_api_messaging: Me
         )
     )
 
-# スケジュール登録の次のステップ
+# スケジュール登録の次のステップ (変更なし)
 def process_schedule_registration_step(user_id, message_text, reply_token, line_bot_api_messaging: MessagingApi):
     current_state = SessionState.get_state(user_id)
     session_data = get_user_session_data(user_id, Config.SESSION_DATA_KEY) or {}
@@ -232,7 +268,7 @@ def process_schedule_registration_step(user_id, message_text, reply_token, line_
                 )
             )
 
-# スケジュール編集開始
+# スケジュール編集開始 (変更なし)
 def start_schedule_edit(user_id, reply_token, line_bot_api_messaging: MessagingApi):
     SessionState.set_state(user_id, SessionState.ASKING_SCHEDULE_EDIT_DATE)
     set_user_session_data(user_id, Config.SESSION_DATA_KEY, {})
@@ -243,7 +279,7 @@ def start_schedule_edit(user_id, reply_token, line_bot_api_messaging: MessagingA
         )
     )
 
-# スケジュール編集の次のステップ
+# スケジュール編集の次のステップ (変更なし)
 def process_schedule_edit_step(user_id, message_text, reply_token, line_bot_api_messaging: MessagingApi):
     current_state = SessionState.get_state(user_id)
     session_data = get_user_session_data(user_id, Config.SESSION_DATA_KEY) or {}
@@ -354,7 +390,7 @@ def process_schedule_edit_step(user_id, message_text, reply_token, line_bot_api_
                 )
             )
 
-# スケジュール削除開始
+# スケジュール削除開始 (変更なし)
 def start_schedule_deletion(user_id, reply_token, line_bot_api_messaging: MessagingApi):
     SessionState.set_state(user_id, SessionState.ASKING_SCHEDULE_DELETE_DATE)
     set_user_session_data(user_id, Config.SESSION_DATA_KEY, {})
@@ -365,7 +401,7 @@ def start_schedule_deletion(user_id, reply_token, line_bot_api_messaging: Messag
         )
     )
 
-# スケジュール削除の次のステップ
+# スケジュール削除の次のステップ (変更なし)
 def process_schedule_deletion_step(user_id, message_text, reply_token, line_bot_api_messaging: MessagingApi):
     current_state = SessionState.get_state(user_id)
     session_data = get_user_session_data(user_id, Config.SESSION_DATA_KEY) or {}
