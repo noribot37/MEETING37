@@ -1,5 +1,3 @@
-# line_handlers/qna/attendance_qna.py
-
 import os
 from datetime import datetime
 import re
@@ -145,11 +143,36 @@ def handle_attendance_qa_response(user_id, user_message, reply_token, line_bot_a
         line_bot_api_messaging.reply_message(ReplyMessageRequest(reply_token=reply_token, messages=messages))
         return
 
-    print(f"DEBUG: Handling attendance Q&A. State: {state}, Message: {user_message}")
+    print(f"DEBUG: Handling attendance Q&A. User ID: {user_id}, Current State: {state}, Message: {user_message}")
 
     if state == SessionState.ASKING_ATTENDANCE_STATUS:
         status = user_message
         if status in ['〇', '△', '×']:
+            data['attendance_status'] = status  # 参加ステータスをセッションデータに保存
+            set_user_session_data(user_id, Config.SESSION_DATA_KEY, current_session_data)  # セッションデータを更新 (重要)
+            SessionState.set_state(user_id, SessionState.ASKING_FOR_REMARKS_CONFIRMATION)  # 状態を更新
+
+            messages.append(TextMessage(
+                text="備考はありますか？",
+                quick_reply=QuickReply(items=[
+                    QuickReplyItem(action=MessageAction(label='はい', text='はい')),
+                    QuickReplyItem(action=MessageAction(label='いいえ', text='いいえ'))
+                ])
+            ))
+        else:
+            messages.append(TextMessage(text="参加予定は「〇」「△」「×」のいずれかで入力してください。",
+                quick_reply=QuickReply(items=[
+                    QuickReplyItem(action=MessageAction(label='〇', text='〇')),
+                    QuickReplyItem(action=MessageAction(label='△', text='△')),
+                    QuickReplyItem(action=MessageAction(label='×', text='×'))
+                ])
+            ))
+
+    elif state == SessionState.ASKING_FOR_REMARKS_CONFIRMATION:
+        if user_message == 'はい':
+            SessionState.set_state(user_id, SessionState.ASKING_ATTENDANCE_REMARKS)
+            messages.append(TextMessage(text="備考を入力してください。"))
+        elif user_message == 'いいえ':
             unregistered_events = data.get('unregistered_events', [])
             current_event_index = data.get('current_event_index', 0)
 
@@ -163,6 +186,7 @@ def handle_attendance_qa_response(user_id, user_message, reply_token, line_bot_a
             current_event = unregistered_events[current_event_index]
             event_date = current_event['date']
             event_title = current_event['title']
+            attendance_status = data.get('attendance_status', '')  # 保存された参加ステータスを取得
 
             try:
                 success, msg = update_or_add_attendee(
@@ -170,8 +194,8 @@ def handle_attendance_qa_response(user_id, user_message, reply_token, line_bot_a
                     title=event_title,
                     user_id=session_user_id,
                     username=session_user_display_name,
-                    attendance_status=status,
-                    notes=data.get('attendance_remarks', '')
+                    attendance_status=attendance_status,  # 保存されたステータスを使用
+                    notes=''  # 備考は空
                 )
                 if success:
                     messages.append(TextMessage(text=f"{event_date} の「{event_title}」の参加予定を登録しました！"))
@@ -179,7 +203,7 @@ def handle_attendance_qa_response(user_id, user_message, reply_token, line_bot_a
                     next_event_index = current_event_index + 1
                     if next_event_index < len(unregistered_events):
                         data['current_event_index'] = next_event_index
-                        set_user_session_data(user_id, Config.SESSION_DATA_KEY, current_session_data)
+                        set_user_session_data(user_id, Config.SESSION_DATA_KEY, current_session_data) # セッションデータを更新
 
                         next_event = unregistered_events[next_event_index]
                         messages.append(TextMessage(
@@ -190,6 +214,8 @@ def handle_attendance_qa_response(user_id, user_message, reply_token, line_bot_a
                                 QuickReplyItem(action=MessageAction(label='×', text='×'))
                             ])
                         ))
+                        # !!! 修正箇所: 次のイベントがある場合、必ずこの状態に戻す !!!
+                        SessionState.set_state(user_id, SessionState.ASKING_ATTENDANCE_STATUS) 
                     else:
                         messages.append(TextMessage(text="全ての未登録イベントの参加予定登録が完了しました！\nありがとうございました。"))
                         delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
@@ -204,18 +230,89 @@ def handle_attendance_qa_response(user_id, user_message, reply_token, line_bot_a
                 delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
                 SessionState.set_state(user_id, SessionState.NONE)
         else:
-            messages.append(TextMessage(text="参加予定は「〇」「△」「×」のいずれかで入力してください。",
+            messages.append(TextMessage(
+                text="「はい」または「いいえ」で答えてください。",
                 quick_reply=QuickReply(items=[
-                    QuickReplyItem(action=MessageAction(label='〇', text='〇')),
-                    QuickReplyItem(action=MessageAction(label='△', text='△')),
-                    QuickReplyItem(action=MessageAction(label='×', text='×'))
+                    QuickReplyItem(action=MessageAction(label='はい', text='はい')),
+                    QuickReplyItem(action=MessageAction(label='いいえ', text='いいえ'))
                 ])
             ))
-    else:
+            # !!! 修正箇所: 不適切な入力の場合も状態は変えない !!!
+            SessionState.set_state(user_id, SessionState.ASKING_FOR_REMARKS_CONFIRMATION) 
+
+    elif state == SessionState.ASKING_ATTENDANCE_REMARKS:
+        attendance_remarks = user_message  # ユーザーのメッセージを備考として取得
+
+        unregistered_events = data.get('unregistered_events', [])
+        current_event_index = data.get('current_event_index', 0)
+
+        if not unregistered_events or current_event_index >= len(unregistered_events):
+            messages.append(TextMessage(text="処理すべきイベントが見つかりませんでした。\n「参加予定登録」と入力してやり直してください。"))
+            delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
+            SessionState.set_state(user_id, SessionState.NONE)
+            line_bot_api_messaging.reply_message(ReplyMessageRequest(reply_token=reply_token, messages=messages))
+            return
+
+        current_event = unregistered_events[current_event_index]
+        event_date = current_event['date']
+        event_title = current_event['title']
+        attendance_status = data.get('attendance_status', '')  # 保存された参加ステータスを取得
+
+        try:
+            success, msg = update_or_add_attendee(
+                date=event_date,
+                title=event_title,
+                user_id=session_user_id,
+                username=session_user_display_name,
+                attendance_status=attendance_status,  # 保存されたステータスを使用
+                notes=attendance_remarks  # ユーザーからの備考を使用
+            )
+            if success:
+                messages.append(TextMessage(text=f"{event_date} の「{event_title}」の参加予定を登録しました！"))
+
+                next_event_index = current_event_index + 1
+                if next_event_index < len(unregistered_events):
+                    data['current_event_index'] = next_event_index
+                    set_user_session_data(user_id, Config.SESSION_DATA_KEY, current_session_data) # セッションデータを更新
+
+                    next_event = unregistered_events[next_event_index]
+                    messages.append(TextMessage(
+                        text=f"続けてこちらのイベントの参加予定を登録します。\n\n{next_event['date']} の「{next_event['title']}」\n\n参加予定を教えてください（〇, △, ×）",
+                        quick_reply=QuickReply(items=[
+                            QuickReplyItem(action=MessageAction(label='〇', text='〇')),
+                            QuickReplyItem(action=MessageAction(label='△', text='△')),
+                            QuickReplyItem(action=MessageAction(label='×', text='×'))
+                        ])
+                    ))
+                    # !!! 修正箇所: 次のイベントがある場合、必ずこの状態に戻す !!!
+                    SessionState.set_state(user_id, SessionState.ASKING_ATTENDANCE_STATUS) 
+                else:
+                    messages.append(TextMessage(text="全ての未登録イベントの参加予定登録が完了しました！\nありがとうございました。"))
+                    delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
+                    SessionState.set_state(user_id, SessionState.NONE)
+
+            else:
+                messages.append(TextMessage(text=f"参加予定登録中にエラーが発生しました: {msg}"))
+                delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
+                SessionState.set_state(user_id, SessionState.NONE)
+        except Exception as e:
+            messages.append(TextMessage(text=f"参加予定登録中に予期せぬエラーが発生しました: {e}"))
+            delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
+            SessionState.set_state(user_id, SessionState.NONE)
+
+    else: # どの状態にも当てはまらない場合（エラーまたは不明な状態）
+        # この部分が、意図しない「不明な状態です」メッセージの原因となることがあるため、
+        # より慎重なハンドリングが必要。基本的には、このブロックに来る前に適切な状態遷移が行われているべき。
         messages.append(TextMessage(text="現在、参加予定登録の処理が中断されているようです。\n「参加予定登録」と入力して最初からやり直してください。"))
         delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
         SessionState.set_state(user_id, SessionState.NONE)
 
+    # 応答メッセージが空の場合のガード
+    if not messages:
+        print(f"WARNING: No messages generated for user {user_id} at state {state} with message {user_message}. Sending default reset message.")
+        messages.append(TextMessage(text="予期せぬエラーが発生しました。セッションをリセットします。\n「参加予定登録」と入力して最初からやり直してください。"))
+        delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
+        SessionState.set_state(user_id, SessionState.NONE)
 
     line_bot_api_messaging.reply_message(
         ReplyMessageRequest(

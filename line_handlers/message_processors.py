@@ -69,6 +69,18 @@ def process_message(user_id: str, message_text: str, reply_token: str, user_disp
                     messages=[TextMessage(text=Config.DEFAULT_REPLY_MESSAGE)]
                 )
             )
+    # ↓↓↓ ここから修正 ↓↓↓
+    elif current_state == SessionState.ASKING_ATTENDANCE_STATUS or \
+         current_state == SessionState.ASKING_FOR_REMARKS_CONFIRMATION or \
+         current_state == SessionState.ASKING_ATTENDANCE_REMARKS:
+        print(f"DEBUG: Processing attendance Q&A. State: {current_state}, Message: {message_text}")
+        attendance_qna.handle_attendance_qa_response(
+            user_id,
+            message_text,
+            reply_token,
+            line_bot_api_messaging
+        )
+    # ↑↑↑ ここまで修正 ↑↑↑
     elif current_state.startswith("asking_schedule_") and current_state != SessionState.ASKING_ATTENDEE_REGISTRATION_CONFIRMATION:
         print(f"DEBUG: Processing schedule registration/edit/delete step. State: {current_state}")
         schedule_commands.process_schedule_registration_step(user_id, message_text, reply_token, line_bot_api_messaging)
@@ -78,7 +90,6 @@ def process_message(user_id: str, message_text: str, reply_token: str, user_disp
     elif current_state.startswith("asking_schedule_delete_"):
         print(f"DEBUG: Processing schedule delete step. State: {current_state}")
         schedule_commands.process_schedule_deletion_step(user_id, message_text, reply_token, line_bot_api_messaging)
-
     elif current_state == SessionState.ASKING_ATTENDEE_REGISTRATION_CONFIRMATION:
         print(f"DEBUG: Processing attendee registration confirmation. Message: {message_text}")
         if message_text == "はい":
@@ -113,14 +124,17 @@ def process_message(user_id: str, message_text: str, reply_token: str, user_disp
                     )]
                 )
             )
-    elif current_state == SessionState.ASKING_ATTENDANCE_STATUS:
-        print(f"DEBUG: Processing attendance status. Message: {message_text}")
-        attendance_qna.handle_attendance_qa_response(
-            user_id,
-            message_text,
-            reply_token,
-            line_bot_api_messaging
-        )
+    # ASKING_ATTENDANCE_STATUS, ASKING_FOR_REMARKS_CONFIRMATION, ASKING_ATTENDANCE_REMARKS は上記の修正でまとめて処理されるため、
+    # 以下の2つのブロックは削除またはコメントアウトしても問題ありません。
+    # ただし、今回は明示的に追記する形で提示します。
+    # elif current_state == SessionState.ASKING_ATTENDANCE_STATUS: # 上で統合されたため、このブロックは不要
+    #     print(f"DEBUG: Processing attendance status. Message: {message_text}")
+    #     attendance_qna.handle_attendance_qa_response(
+    #         user_id,
+    #         message_text,
+    #         reply_token,
+    #         line_bot_api_messaging
+    #     )
     elif current_state.startswith("asking_attendee_registration_"):
         print(f"DEBUG: Processing attendee registration step. State: {current_state}")
         attendance_commands.process_attendee_registration_step(user_id, message_text, reply_token, line_bot_api_messaging)
