@@ -79,8 +79,23 @@ def process_message(user_id: str, message_text: str, reply_token: str, user_disp
             reply_token,
             line_bot_api_messaging
         )
-    # スケジュール登録の質問フローを処理する主要な分岐です。
-    # ASKING_CONFIRM_SCHEDULE_REGISTRATION をリストから削除しました。
+    # スケジュール登録の「続けて登録しますか？」の状態を個別にハンドリング
+    elif current_state == SessionState.ASKING_FOR_ANOTHER_SCHEDULE_REGISTRATION:
+        print(f"DEBUG: Processing ASKING_FOR_ANOTHER_SCHEDULE_REGISTRATION. Message: {message_text}")
+        if message_text.lower() == 'はい':
+            print("DEBUG: User selected 'はい', restarting schedule registration.")
+            schedule_commands.start_schedule_registration(user_id, reply_token, line_bot_api_messaging)
+        else:
+            print("DEBUG: User selected 'いいえ' or other input, ending schedule registration.")
+            SessionState.set_state(user_id, SessionState.NONE)
+            delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
+            line_bot_api_messaging.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text="スケジュール登録を終了します。")]
+                )
+            )
+    # スケジュール登録の他の質問フロー
     elif current_state in [
         SessionState.ASKING_SCHEDULE_DATE,
         SessionState.ASKING_SCHEDULE_TITLE,
@@ -89,8 +104,6 @@ def process_message(user_id: str, message_text: str, reply_token: str, user_disp
         SessionState.ASKING_SCHEDULE_DETAIL,
         SessionState.ASKING_SCHEDULE_DEADLINE,
         SessionState.ASKING_SCHEDULE_SCALE,
-        # SessionState.ASKING_CONFIRM_SCHEDULE_REGISTRATION, # この行を削除
-        SessionState.ASKING_FOR_ANOTHER_SCHEDULE_REGISTRATION
     ]:
         print(f"DEBUG: Processing schedule registration step. State: {current_state}")
         schedule_commands.process_schedule_registration_step(user_id, message_text, reply_token, line_bot_api_messaging)
