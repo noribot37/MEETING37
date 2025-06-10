@@ -37,29 +37,32 @@ class SessionState:
     ASKING_SCHEDULE_DATE = "asking_schedule_date"
     ASKING_SCHEDULE_TITLE = "asking_schedule_title"
     ASKING_SCHEDULE_START_TIME = "asking_schedule_start_time"
-    ASKING_SCHEDULE_END_TIME = "asking_schedule_end_time"
+    # ASKING_SCHEDULE_END_TIME を削除済
     ASKING_SCHEDULE_LOCATION = "asking_schedule_location"
-    ASKING_SCHEDULE_PERSON_IN_CHARGE = "asking_schedule_person_in_charge"
-    ASKING_SCHEDULE_CONTENT = "asking_schedule_content"
-    ASKING_SCHEDULE_URL = "asking_schedule_url"
-    ASKING_SCHEDULE_NOTES = "asking_schedule_notes"
-    ASKING_CONFIRM_SCHEDULE_REGISTRATION = "asking_confirm_schedule_registration"
-    ASKING_FOR_ANOTHER_SCHEDULE_REGISTRATION = "asking_for_another_schedule_registration"
+    # ASKING_SCHEDULE_PERSON_IN_CHARGE を削除済
+    ASKING_SCHEDULE_DETAIL = "asking_schedule_detail" # 変更済
+    # ASKING_SCHEDULE_URL を削除済
+    # ASKING_SCHEDULE_NOTES を削除済
+    ASKING_SCHEDULE_DEADLINE = "asking_schedule_deadline" # 追加済
+    ASKING_SCHEDULE_SCALE = "asking_schedule_scale"     # 追加済
 
-    # スケジュール編集
+    # ASKING_CONFIRM_SCHEDULE_REGISTRATION を削除
+    ASKING_FOR_ANOTHER_SCHEDULE_REGISTRATION = "asking_for_another_schedule_registration" # 続けて登録するかの状態
+
+    # スケジュール編集 (変更なし)
     ASKING_SCHEDULE_EDIT_DATE = "asking_schedule_edit_date"
     ASKING_SCHEDULE_EDIT_TITLE = "asking_schedule_edit_title"
     ASKING_SCHEDULE_EDIT_FIELD = "asking_schedule_edit_field"
     ASKING_SCHEDULE_EDIT_VALUE = "asking_schedule_edit_value"
     ASKING_FOR_ANOTHER_SCHEDULE_EDIT = "asking_for_another_schedule_edit"
 
-    # スケジュール削除
+    # スケジュール削除 (変更なし)
     ASKING_SCHEDULE_DELETE_DATE = "asking_schedule_delete_date"
     ASKING_SCHEDULE_DELETE_TITLE = "asking_schedule_delete_title"
     ASKING_CONFIRM_SCHEDULE_DELETE = "asking_confirm_schedule_delete"
     ASKING_FOR_NEXT_SCHEDULE_DELETION = "asking_for_next_schedule_deletion"
 
-    # 参加予定登録 (attendance_commands)
+    # 参加予定登録 (attendance_commands) (変更なし)
     ASKING_ATTENDEE_REGISTRATION_DATE = "asking_attendee_registration_date"
     ASKING_ATTENDEE_REGISTRATION_TITLE = "asking_attendee_registration_title"
     ASKING_ATTENDEE_REGISTRATION_STATUS = "asking_attendee_registration_status" # 〇✕△
@@ -67,26 +70,21 @@ class SessionState:
     ASKING_CONFIRM_ATTENDEE_REGISTRATION = "asking_confirm_attendee_registration"
     ASKING_FOR_ANOTHER_ATTENDEE_REGISTRATION = "asking_for_another_attendee_registration"
 
-    # 参加予定編集 (attendance_commands)
+    # 参加予定編集 (attendance_commands) (変更なし)
     ASKING_ATTENDEE_EDIT_DATE = "asking_attendee_edit_date"
     ASKING_ATTENDEE_EDIT_TITLE = "asking_attendee_edit_title"
     ASKING_ATTENDEE_CONFIRM_CANCEL = "asking_attendee_confirm_cancel"
     ASKING_ATTENDEE_EDIT_NOTES = "asking_attendee_edit_notes"
     ASKING_FOR_ANOTHER_ATTENDEE_EDIT = "asking_for_another_attendee_edit"
 
-    # スケジュール一覧からの参加希望確認 (list_schedulesから遷移) - これを追加！
+    # スケジュール一覧からの参加希望確認 (list_schedulesから遷移) (変更なし)
     ASKING_ATTENDEE_REGISTRATION_CONFIRMATION = "asking_attendee_registration_confirmation" 
 
-    # attendance_qna.py で使用される状態
+    # attendance_qna.py で使用される状態 (変更なし)
     ASKING_ATTENDANCE_STATUS = "asking_attendance_status" # 〇△×の回答待ち
     ASKING_FOR_REMARKS_CONFIRMATION = "asking_for_remarks_confirmation" # 備考の有無の確認（はい/いいえ）
     ASKING_ATTENDANCE_REMARKS = "asking_attendance_remarks" # 備考の回答待ち
     ASKING_NEXT_ATTENDANCE_REGISTRATION = "asking_next_attendance_registration" # 次の予定があるかどうかの確認
-
-    # QA登録 (必要であれば追加)
-    # ASKING_QA_QUESTION = "asking_qa_question"
-    # ASKING_QA_ANSWER = "asking_qa_answer"
-    # ASKING_CONFIRM_QA_REGISTRATION = "asking_confirm_qa_registration"
 
     _user_states = {} # ユーザーごとの状態を保持する辞書
 

@@ -1,78 +1,47 @@
-# line_handlers/commands/schedule_commands.py
-
 import pandas as pd
 from datetime import datetime
-# 修正箇所: QuickReplyButton を QuickReplyItem に変更し、全て linebot.v3.messaging からインポート
 from linebot.v3.messaging import MessagingApi, ReplyMessageRequest, TextMessage, QuickReply, QuickReplyItem, MessageAction 
 
-from config import Config, SessionState # SessionStateはここからインポート
+from config import Config, SessionState
 from google_sheets.utils import (
     get_all_records,
     add_schedule,
     delete_schedule,
     edit_schedule
 )
-# utils/session_managerからセッション操作関数をインポート (SessionStateはインポートしない)
 from utils.session_manager import get_user_session_data, set_user_session_data, delete_user_session_data
 
 
-# スケジュール一覧表示
+# スケジュール一覧表示 (変更なし)
 def list_schedules(user_id, reply_token, line_bot_api_messaging: MessagingApi):
-    # Config.GOOGLE_SHEETS_SCHEDULE_WORKSHEET_NAME を使用
-    all_schedules_df = get_all_records(Config.GOOGLE_SHEETS_SCHEDULE_WORKSHEET_NAME) # ★修正: 変数名を修正
+    all_schedules_df = get_all_records(Config.GOOGLE_SHEETS_SCHEDULE_WORKSHEET_NAME)
 
-    messages_to_send = [] # メッセージリストを初期化
+    messages_to_send = []
 
     if all_schedules_df.empty:
         reply_message_text = "登録されているスケジュールはありません。"
         messages_to_send.append(TextMessage(text=reply_message_text))
-        # スケジュールがない場合はセッションをリセット
         SessionState.set_state(user_id, SessionState.NONE)
         delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
     else:
         reply_message_text = "【スケジュール一覧】\n"
-        # 日付でソート（日付がdatetime型であると仮定）
-        # スプレッドシートから読み込んだ日付は文字列の場合があるため、変換を試みる
         all_schedules_df['日付'] = pd.to_datetime(all_schedules_df['日付'], errors='coerce')
         all_schedules_df = all_schedules_df.sort_values(by='日付', ascending=True)
 
-        # 未登録のスケジュールを抽出してセッションに保存するための準備
-        # ここでは、user_attendees を取得する必要があるが、それは attendance_qna.py で行うべき。
-        # list_schedules の目的は「スケジュール一覧表示」と「参加希望登録の確認」であるため、
-        # 未登録イベントのフィルタリングは attendance_qna.py に任せるのが適切。
-        # ただし、現状の attendance_qna.py は get_all_records を再度呼び出しているため、
-        # ここで取得した all_schedules_df をセッションに保存して引き継ぐ方が効率的。
-        # しかし、DataFrameをそのままセッションに保存するのは非効率的で、JSONシリアライズも必要になる。
-        # 簡易的なデータ（日付とタイトルのみ）を渡すことを検討。
-
-        # ここで、ユーザーの未参加イベントを抽出し、セッションに保存するロジックを追加
-        # attendance_qna.py の start_attendance_qa と同様のロジックを使用
-        # ただし、ここでは quick_reply を出すだけで、unregistered_meetings は attendance_qna.py に任せる
-
-        # 参加希望登録の確認メッセージとクイックリプライを追加
-        # セッション状態を更新
-        SessionState.set_state(user_id, SessionState.ASKING_ATTENDEE_REGISTRATION_CONFIRMATION) # 新しい状態を設定
-
-        # ★ここから修正追加: 未登録イベントのデータをセッションに保存する準備
-        # `get_all_records` はすでに実行済みなので、結果のDataFrameを使用
-        # DataFrameの各行を辞書としてイテレートし、日付とタイトルを抽出
         unregistered_events_for_session = []
         for index, meeting_series in all_schedules_df.iterrows():
-            meeting = meeting_series.to_dict() # Seriesをdictに変換
+            meeting = meeting_series.to_dict()
             date = meeting.get('日付')
             title = meeting.get('タイトル')
-            if pd.notna(date) and title: # 日付がNaNでないことを確認
-                unregistered_events_for_session.append({'date': date.strftime('%Y/%m/%d'), 'title': title}) # datetimeを文字列に変換
+            if pd.notna(date) and title:
+                unregistered_events_for_session.append({'date': date.strftime('%Y/%m/%d'), 'title': title})
 
-        # 現在のセッションデータを取得し、unregistered_eventsを追加
         session_data = get_user_session_data(user_id, Config.SESSION_DATA_KEY) or {}
         session_data['unregistered_events'] = unregistered_events_for_session
-        session_data['logic_path'] = 'list_schedules_flow' # フローを識別
+        session_data['logic_path'] = 'list_schedules_flow'
         set_user_session_data(user_id, Config.SESSION_DATA_KEY, session_data)
-        # ★修正追加ここまで
 
         for index, row in all_schedules_df.iterrows():
-            # スプレッドシートの列名に合わせて情報を取得
             date_str = row['日付'].strftime('%Y/%m/%d') if pd.notna(row['日付']) else '日付未定'
             time_str = row.get('時間', '未定')
             location = row.get('場所', '未定')
@@ -90,7 +59,6 @@ def list_schedules(user_id, reply_token, line_bot_api_messaging: MessagingApi):
 
         messages_to_send.append(TextMessage(text=reply_message_text))
 
-
         quick_reply_message = TextMessage(
             text="続けて参加希望の登録をしますか？",
             quick_reply=QuickReply(
@@ -105,7 +73,7 @@ def list_schedules(user_id, reply_token, line_bot_api_messaging: MessagingApi):
     line_bot_api_messaging.reply_message(
         ReplyMessageRequest(
             reply_token=reply_token,
-            messages=messages_to_send # リストでメッセージを送信
+            messages=messages_to_send
         )
     )
 
@@ -113,7 +81,7 @@ def list_schedules(user_id, reply_token, line_bot_api_messaging: MessagingApi):
 # スケジュール登録開始 (変更なし)
 def start_schedule_registration(user_id, reply_token, line_bot_api_messaging: MessagingApi):
     SessionState.set_state(user_id, SessionState.ASKING_SCHEDULE_DATE)
-    set_user_session_data(user_id, Config.SESSION_DATA_KEY, {}) # セッションデータを初期化
+    set_user_session_data(user_id, Config.SESSION_DATA_KEY, {})
     line_bot_api_messaging.reply_message(
         ReplyMessageRequest(
             reply_token=reply_token,
@@ -121,7 +89,7 @@ def start_schedule_registration(user_id, reply_token, line_bot_api_messaging: Me
         )
     )
 
-# スケジュール登録の次のステップ (変更なし)
+# スケジュール登録の次のステップ (ここを大きく修正)
 def process_schedule_registration_step(user_id, message_text, reply_token, line_bot_api_messaging: MessagingApi):
     current_state = SessionState.get_state(user_id)
     session_data = get_user_session_data(user_id, Config.SESSION_DATA_KEY) or {}
@@ -156,17 +124,7 @@ def process_schedule_registration_step(user_id, message_text, reply_token, line_
             )
         )
     elif current_state == SessionState.ASKING_SCHEDULE_START_TIME:
-        session_data['開始時間'] = message_text
-        set_user_session_data(user_id, Config.SESSION_DATA_KEY, session_data)
-        SessionState.set_state(user_id, SessionState.ASKING_SCHEDULE_END_TIME)
-        line_bot_api_messaging.reply_message(
-            ReplyMessageRequest(
-                reply_token=reply_token,
-                messages=[TextMessage(text="終了時間を入力してください。（例: 11:00）")]
-            )
-        )
-    elif current_state == SessionState.ASKING_SCHEDULE_END_TIME:
-        session_data['終了時間'] = message_text
+        session_data['時間'] = message_text # スプレッドシートの列名に合わせて変更
         set_user_session_data(user_id, Config.SESSION_DATA_KEY, session_data)
         SessionState.set_state(user_id, SessionState.ASKING_SCHEDULE_LOCATION)
         line_bot_api_messaging.reply_message(
@@ -178,83 +136,88 @@ def process_schedule_registration_step(user_id, message_text, reply_token, line_
     elif current_state == SessionState.ASKING_SCHEDULE_LOCATION:
         session_data['場所'] = message_text
         set_user_session_data(user_id, Config.SESSION_DATA_KEY, session_data)
-        SessionState.set_state(user_id, SessionState.ASKING_SCHEDULE_PERSON_IN_CHARGE)
+        SessionState.set_state(user_id, SessionState.ASKING_SCHEDULE_DETAIL) # 状態をDETAILに変更
         line_bot_api_messaging.reply_message(
             ReplyMessageRequest(
                 reply_token=reply_token,
-                messages=[TextMessage(text="担当者を入力してください。（例: 〇〇）")]
+                messages=[TextMessage(text="詳細を入力してください。（ない場合は「なし」）")] # 質問メッセージを「詳細」に変更
             )
         )
-    elif current_state == SessionState.ASKING_SCHEDULE_PERSON_IN_CHARGE:
-        session_data['担当者'] = message_text
+    elif current_state == SessionState.ASKING_SCHEDULE_DETAIL: # 状態名をDETAILに変更
+        session_data['詳細'] = message_text # session_dataのキーを「詳細」に変更
         set_user_session_data(user_id, Config.SESSION_DATA_KEY, session_data)
-        SessionState.set_state(user_id, SessionState.ASKING_SCHEDULE_CONTENT)
+        SessionState.set_state(user_id, SessionState.ASKING_SCHEDULE_DEADLINE) # 新しい質問「申込締切日」へ
         line_bot_api_messaging.reply_message(
             ReplyMessageRequest(
                 reply_token=reply_token,
-                messages=[TextMessage(text="内容を入力してください。（ない場合は「なし」）")]
+                messages=[TextMessage(text="申込締切日をYYYY/MM/DD形式で入力してください。（ない場合は「なし」）")] # 新しい質問
             )
         )
-    elif current_state == SessionState.ASKING_SCHEDULE_CONTENT:
-        session_data['内容'] = message_text
-        set_user_session_data(user_id, Config.SESSION_DATA_KEY, session_data)
-        SessionState.set_state(user_id, SessionState.ASKING_SCHEDULE_URL)
-        line_bot_api_messaging.reply_message(
-            ReplyMessageRequest(
-                reply_token=reply_token,
-                messages=[TextMessage(text="関連URLを入力してください。（ない場合は「なし」）")]
-            )
-        )
-    elif current_state == SessionState.ASKING_SCHEDULE_URL:
-        session_data['URL'] = message_text
-        set_user_session_data(user_id, Config.SESSION_DATA_KEY, session_data)
-        SessionState.set_state(user_id, SessionState.ASKING_SCHEDULE_NOTES)
-        line_bot_api_messaging.reply_message(
-            ReplyMessageRequest(
-                reply_token=reply_token,
-                messages=[TextMessage(text="備考を入力してください。（ない場合は「なし」）")]
-            )
-        )
-    elif current_state == SessionState.ASKING_SCHEDULE_NOTES:
-        session_data['備考'] = message_text
-        set_user_session_data(user_id, Config.SESSION_DATA_KEY, session_data)
-        SessionState.set_state(user_id, SessionState.ASKING_CONFIRM_SCHEDULE_REGISTRATION)
-
-        confirm_message = "以下の内容でスケジュールを登録します。よろしいですか？\n"
-        for key, value in session_data.items():
-            confirm_message += f"{key}: {value}\n"
-        confirm_message += "はい / いいえ"
-
-        line_bot_api_messaging.reply_message(
-            ReplyMessageRequest(
-                reply_token=reply_token,
-                messages=[TextMessage(text=confirm_message)]
-            )
-        )
-    elif current_state == SessionState.ASKING_CONFIRM_SCHEDULE_REGISTRATION:
-        if message_text.lower() == 'はい':
-            if add_schedule(session_data):
-                reply_message = "スケジュールを登録しました。\n続けて別のスケジュールを登録しますか？（はい/いいえ）"
-                SessionState.set_state(user_id, SessionState.ASKING_FOR_ANOTHER_SCHEDULE_REGISTRATION)
-            else:
-                reply_message = "スケジュールの登録に失敗しました。最初からやり直してください。"
-                SessionState.set_state(user_id, SessionState.NONE)
-            delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
-            line_bot_api_messaging.reply_message(
-                ReplyMessageRequest(
-                    reply_token=reply_token,
-                    messages=[TextMessage(text=reply_message)]
+    elif current_state == SessionState.ASKING_SCHEDULE_DEADLINE: # 新しい質問「申込締切日」の処理
+        if message_text.lower() != 'なし': # 「なし」以外の場合は日付形式を検証
+            try:
+                pd.to_datetime(message_text, errors='raise')
+            except ValueError:
+                line_bot_api_messaging.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=reply_token,
+                        messages=[TextMessage(text="日付の形式が正しくありません。「なし」またはYYYY/MM/DD形式で入力してください。\n例: 2025/06/15")]
+                    )
                 )
+                return # ここで処理を中断し、再入力を促す
+        session_data['申込締切日'] = message_text
+        set_user_session_data(user_id, Config.SESSION_DATA_KEY, session_data)
+        SessionState.set_state(user_id, SessionState.ASKING_SCHEDULE_SCALE) # 新しい質問「尺」へ
+        line_bot_api_messaging.reply_message(
+            ReplyMessageRequest(
+                reply_token=reply_token,
+                messages=[TextMessage(text="尺を入力してください。（例: 1時間、ない場合は「なし」）")] # 新しい質問
             )
+        )
+    elif current_state == SessionState.ASKING_SCHEDULE_SCALE: # 新しい質問「尺」の処理 (ここで登録処理へ)
+        session_data['尺'] = message_text
+        set_user_session_data(user_id, Config.SESSION_DATA_KEY, session_data)
+
+        # スプレッドシートに渡すデータを、新しい質問項目に合わせて調整
+        data_to_add = {
+            '日付': session_data.get('日付'),
+            'タイトル': session_data.get('タイトル'),
+            '時間': session_data.get('時間'),
+            '場所': session_data.get('場所'),
+            '詳細': session_data.get('詳細'),
+            '申込締切日': session_data.get('申込締切日', ''),
+            '尺': session_data.get('尺', ''),
+        }
+
+        if add_schedule(data_to_add): # 修正後のデータでadd_scheduleを呼び出す
+            messages_to_send = [
+                TextMessage(text="以下の内容で登録しました！"), # 登録完了メッセージ
+                TextMessage(
+                    text="続けて他のスケジュールも登録しますか？", # 次の質問
+                    quick_reply=QuickReply(
+                        items=[
+                            QuickReplyItem(action=MessageAction(label="はい", text="はい")),
+                            QuickReplyItem(action=MessageAction(label="いいえ", text="いいえ"))
+                        ]
+                    )
+                )
+            ]
+            SessionState.set_state(user_id, SessionState.ASKING_FOR_ANOTHER_SCHEDULE_REGISTRATION)
         else:
+            messages_to_send = [TextMessage(text="スケジュールの登録に失敗しました。最初からやり直してください。")]
             SessionState.set_state(user_id, SessionState.NONE)
-            delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
-            line_bot_api_messaging.reply_message(
-                ReplyMessageRequest(
-                    reply_token=reply_token,
-                    messages=[TextMessage(text="スケジュール登録をキャンセルしました。")]
-                )
+
+        delete_user_session_data(user_id, Config.SESSION_DATA_KEY) # 登録または失敗に関わらずセッションデータをクリア
+
+        line_bot_api_messaging.reply_message(
+            ReplyMessageRequest(
+                reply_token=reply_token,
+                messages=messages_to_send
             )
+        )
+    # ASKING_CONFIRM_SCHEDULE_REGISTRATION ブロックを削除しました。
+    # 代わりに ASKING_SCHEDULE_SCALE の直後に登録処理と「続けて登録しますか？」の質問を行います。
+
     elif current_state == SessionState.ASKING_FOR_ANOTHER_SCHEDULE_REGISTRATION:
         if message_text.lower() == 'はい':
             start_schedule_registration(user_id, reply_token, line_bot_api_messaging)
@@ -307,7 +270,6 @@ def process_schedule_edit_step(user_id, message_text, reply_token, line_bot_api_
         session_data['タイトル'] = message_text
         set_user_session_data(user_id, Config.SESSION_DATA_KEY, session_data)
 
-        # 該当するスケジュールが存在するか確認
         all_schedules = get_all_records(Config.GOOGLE_SHEETS_SCHEDULE_WORKSHEET_NAME)
 
         try:
@@ -329,14 +291,14 @@ def process_schedule_edit_step(user_id, message_text, reply_token, line_bot_api_
         ]
 
         if not matching_schedule.empty:
-            session_data['row_index'] = matching_schedule.index[0] + 2 # スプレッドシートの行番号（1始まり、ヘッダー含む）
+            session_data['row_index'] = matching_schedule.index[0] + 2
             set_user_session_data(user_id, Config.SESSION_DATA_KEY, session_data)
 
             SessionState.set_state(user_id, SessionState.ASKING_SCHEDULE_EDIT_FIELD)
             line_bot_api_messaging.reply_message(
                 ReplyMessageRequest(
                     reply_token=reply_token,
-                    messages=[TextMessage(text="編集したい項目を入力してください。（例: 場所、備考、内容など）")]
+                    messages=[TextMessage(text="編集したい項目を入力してください。（例: 場所、備考、詳細など）")]
                 )
             )
         else:
@@ -429,7 +391,6 @@ def process_schedule_deletion_step(user_id, message_text, reply_token, line_bot_
         session_data['タイトル'] = message_text
         set_user_session_data(user_id, Config.SESSION_DATA_KEY, session_data)
 
-        # 該当するスケジュールが存在するか確認
         all_schedules = get_all_records(Config.GOOGLE_SHEETS_SCHEDULE_WORKSHEET_NAME)
 
         try:
@@ -451,13 +412,13 @@ def process_schedule_deletion_step(user_id, message_text, reply_token, line_bot_
         ]
 
         if not matching_schedule.empty:
-            session_data['row_index'] = matching_schedule.index[0] + 2 # スプレッドシートの行番号（1始まり、ヘッダー含む）
+            session_data['row_index'] = matching_schedule.index[0] + 2
             set_user_session_data(user_id, Config.SESSION_DATA_KEY, session_data)
             SessionState.set_state(user_id, SessionState.ASKING_CONFIRM_SCHEDULE_DELETE)
 
             confirm_message = "以下のスケジュールを削除します。よろしいですか？\n"
             for key, value in session_data.items():
-                if key != 'row_index': # row_indexは表示しない
+                if key != 'row_index':
                     confirm_message += f"{key}: {value}\n"
             confirm_message += "はい / いいえ"
 
