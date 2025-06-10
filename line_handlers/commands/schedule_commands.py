@@ -189,9 +189,17 @@ def process_schedule_registration_step(user_id, message_text, reply_token, line_
             '尺': session_data.get('尺', ''),
         }
 
+        messages_to_send = []
         if add_schedule(data_to_add): # 修正後のデータでadd_scheduleを呼び出す
-            messages_to_send = [
-                TextMessage(text="以下の内容で登録しました！"), # 登録完了メッセージ
+            # 登録内容のメッセージを作成
+            registration_details = "以下の内容で登録しました！\n"
+            display_keys = ['日付', 'タイトル', '時間', '場所', '詳細', '申込締切日', '尺']
+            for key in display_keys:
+                if key in data_to_add:
+                    registration_details += f"{key}: {data_to_add[key]}\n"
+
+            messages_to_send.append(TextMessage(text=registration_details)) # 登録完了メッセージに詳細を含める
+            messages_to_send.append(
                 TextMessage(
                     text="続けて他のスケジュールも登録しますか？", # 次の質問
                     quick_reply=QuickReply(
@@ -201,10 +209,10 @@ def process_schedule_registration_step(user_id, message_text, reply_token, line_
                         ]
                     )
                 )
-            ]
+            )
             SessionState.set_state(user_id, SessionState.ASKING_FOR_ANOTHER_SCHEDULE_REGISTRATION)
         else:
-            messages_to_send = [TextMessage(text="スケジュールの登録に失敗しました。最初からやり直してください。")]
+            messages_to_send.append(TextMessage(text="スケジュールの登録に失敗しました。最初からやり直してください。"))
             SessionState.set_state(user_id, SessionState.NONE)
 
         delete_user_session_data(user_id, Config.SESSION_DATA_KEY) # 登録または失敗に関わらずセッションデータをクリア
@@ -215,9 +223,6 @@ def process_schedule_registration_step(user_id, message_text, reply_token, line_
                 messages=messages_to_send
             )
         )
-    # ASKING_CONFIRM_SCHEDULE_REGISTRATION ブロックを削除しました。
-    # 代わりに ASKING_SCHEDULE_SCALE の直後に登録処理と「続けて登録しますか？」の質問を行います。
-
     elif current_state == SessionState.ASKING_FOR_ANOTHER_SCHEDULE_REGISTRATION:
         if message_text.lower() == 'はい':
             start_schedule_registration(user_id, reply_token, line_bot_api_messaging)
