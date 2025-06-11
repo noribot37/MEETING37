@@ -385,7 +385,6 @@ def process_schedule_edit_step(user_id, message_text, reply_token, line_bot_api_
         set_user_session_data(user_id, Config.SESSION_DATA_KEY, session_data)
         SessionState.set_state(user_id, SessionState.ASKING_SCHEDULE_EDIT_VALUE)
 
-        # ★★★★ 書式例の追加はここから ★★★★
         example_text = ""
         if field_to_edit == "日付":
             example_text = "（例: 2025/06/15）"
@@ -402,7 +401,6 @@ def process_schedule_edit_step(user_id, message_text, reply_token, line_bot_api_
                 messages=[TextMessage(text=f"{field_to_edit}の新しい値を入力してください。{example_text}")]
             )
         )
-        # ★★★★ 書式例の追加はここまで ★★★★
 
     elif current_state == SessionState.ASKING_SCHEDULE_EDIT_VALUE:
         field_to_edit = session_data['編集項目']
@@ -423,8 +421,6 @@ def process_schedule_edit_step(user_id, message_text, reply_token, line_bot_api_
                     )
                     return
         elif field_to_edit == "時間":
-            # 時間の簡単な形式検証（例: XX:YY形式か）
-            # もっと厳密な正規表現などを使うことも可能ですが、今回は簡易的に
             if not (":" in new_value and len(new_value.split(':')) == 2 and 
                     new_value.split(':')[0].isdigit() and new_value.split(':')[1].isdigit()):
                 line_bot_api_messaging.reply_message(
@@ -436,12 +432,37 @@ def process_schedule_edit_step(user_id, message_text, reply_token, line_bot_api_
                 return
 
         update_data = {field_to_edit: new_value}
+        messages_to_send = []
+
         if edit_schedule(row_index, update_data):
-            # ★★★★ Quick Replyの追加はここから ★★★★
-            reply_message_text = "スケジュールを更新しました。\n他に編集したい予定はありますか？"
-            messages_to_send = [
+            # ★★★★ここから修正★★★★
+            # 更新後のデータを再度取得して表示
+            all_schedules_df = get_all_records(Config.GOOGLE_SHEETS_SCHEDULE_WORKSHEET_NAME)
+
+            # row_indexはスプレッドシートの行番号なので、DataFrameのインデックスに変換（-2する）
+            df_index = row_index - 2 
+
+            updated_schedule_series = all_schedules_df.iloc[df_index]
+            updated_schedule = updated_schedule_series.to_dict()
+
+            confirmation_text = "以下の内容でスケジュールを更新しました！\n"
+            display_keys = ['日付', 'タイトル', '時間', '場所', '詳細', '申込締切日', '尺']
+            for key in display_keys:
+                value = updated_schedule.get(key)
+                if key == '日付' and pd.notna(value):
+                    confirmation_text += f"{key}: {value.strftime('%Y/%m/%d')}\n"
+                elif key == '時間' and pd.notna(value):
+                    confirmation_text += f"{key}: {value}\n"
+                elif pd.notna(value): # その他の項目もNaNでないことを確認
+                    confirmation_text += f"{key}: {value}\n"
+
+
+            messages_to_send.append(TextMessage(text=confirmation_text))
+
+            # 続けて編集するかどうかのQuick Replyを別の吹き出しで送る
+            messages_to_send.append(
                 TextMessage(
-                    text=reply_message_text,
+                    text="続けて他に編集したい予定はありますか？",
                     quick_reply=QuickReply(
                         items=[
                             QuickReplyItem(action=MessageAction(label="はい", text="はい")),
@@ -449,28 +470,22 @@ def process_schedule_edit_step(user_id, message_text, reply_token, line_bot_api_
                         ]
                     )
                 )
-            ]
-            line_bot_api_messaging.reply_message(
-                ReplyMessageRequest(
-                    reply_token=reply_token,
-                    messages=messages_to_send
-                )
             )
             SessionState.set_state(user_id, SessionState.ASKING_FOR_ANOTHER_SCHEDULE_EDIT)
-            # ★★★★ Quick Replyの追加はここまで ★★★★
+            # ★★★★ここまで修正★★★★
         else:
-            reply_message = "スケジュールの更新に失敗しました。最初からやり直してください。"
-            line_bot_api_messaging.reply_message(
-                ReplyMessageRequest(
-                    reply_token=reply_token,
-                    messages=[TextMessage(text=reply_message)]
-                )
-            )
+            messages_to_send.append(TextMessage(text="スケジュールの更新に失敗しました。最初からやり直してください。"))
             SessionState.set_state(user_id, SessionState.NONE)
 
-        # 成功・失敗どちらの場合もセッションデータをクリア
+        # 成功・失敗どちらの場合もセッションデータをクリア（edit_schedule後の状態遷移に合わせる）
         delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
 
+        line_bot_api_messaging.reply_message(
+            ReplyMessageRequest(
+                reply_token=reply_token,
+                messages=messages_to_send
+            )
+        )
     elif current_state == SessionState.ASKING_FOR_ANOTHER_SCHEDULE_EDIT:
         if message_text.lower() == 'はい':
             start_schedule_edit(user_id, reply_token, line_bot_api_messaging)
@@ -483,9 +498,6 @@ def process_schedule_edit_step(user_id, message_text, reply_token, line_bot_api_
                     messages=[TextMessage(text="スケジュール編集を終了します。")]
                 )
             )
-    # 既存の`else`ブロックは不要になるか、あるいはより上位のmessage_processors.pyで処理されるため、
-    # ここでは特定の状態以外は処理しないという想定で進めます。
-
 
 # スケジュール削除開始 (変更なし)
 def start_schedule_deletion(user_id, reply_token, line_bot_api_messaging: MessagingApi):
