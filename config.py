@@ -35,19 +35,14 @@ class SessionState:
 
     # スケジュール登録
     ASKING_SCHEDULE_DATE = "asking_schedule_date"
-    ASKING_SCHEDULE_TITLE = "asking_schedule_title"
-    ASKING_SCHEDULE_START_TIME = "asking_schedule_start_time"
-    # ASKING_SCHEDULE_END_TIME を削除済
+    ASKING_SCHEDULE_START_TIME = "asking_schedule_start_time" # 質問順序変更により位置を変更
+    ASKING_SCHEDULE_TITLE = "asking_schedule_title" # 質問順序変更により位置を変更
     ASKING_SCHEDULE_LOCATION = "asking_schedule_location"
-    # ASKING_SCHEDULE_PERSON_IN_CHARGE を削除済
-    ASKING_SCHEDULE_DETAIL = "asking_schedule_detail" # 変更済
-    # ASKING_SCHEDULE_URL を削除済
-    # ASKING_SCHEDULE_NOTES を削除済
-    ASKING_SCHEDULE_DEADLINE = "asking_schedule_deadline" # 追加済
-    ASKING_SCHEDULE_SCALE = "asking_schedule_scale"     # 追加済
-
-    # ASKING_CONFIRM_SCHEDULE_REGISTRATION を削除
-    ASKING_FOR_ANOTHER_SCHEDULE_REGISTRATION = "asking_for_another_schedule_registration" # 続けて登録するかの状態
+    ASKING_SCHEDULE_DETAIL = "asking_schedule_detail"
+    ASKING_SCHEDULE_DEADLINE = "asking_schedule_deadline"
+    ASKING_SCHEDULE_SCALE = "asking_schedule_scale"
+    ASKING_CONTINUE_ON_DUPLICATE_SCHEDULE = "asking_continue_on_duplicate_schedule" # 新しい状態を追加
+    ASKING_FOR_ANOTHER_SCHEDULE_REGISTRATION = "asking_for_another_schedule_registration"
 
     # スケジュール編集 (変更なし)
     ASKING_SCHEDULE_EDIT_DATE = "asking_schedule_edit_date"

@@ -95,11 +95,16 @@ def process_message(user_id: str, message_text: str, reply_token: str, user_disp
                     messages=[TextMessage(text="スケジュール登録を終了します。")]
                 )
             )
+    # スケジュール重複確認の状態を個別にハンドリング
+    elif current_state == SessionState.ASKING_CONTINUE_ON_DUPLICATE_SCHEDULE:
+        print(f"DEBUG: Processing ASKING_CONTINUE_ON_DUPLICATE_SCHEDULE. Message: {message_text}")
+        # schedule_commands.py に処理を移譲
+        schedule_commands.process_schedule_registration_step(user_id, message_text, reply_token, line_bot_api_messaging)
     # スケジュール登録の他の質問フロー
     elif current_state in [
         SessionState.ASKING_SCHEDULE_DATE,
+        SessionState.ASKING_SCHEDULE_START_TIME, # 追加
         SessionState.ASKING_SCHEDULE_TITLE,
-        SessionState.ASKING_SCHEDULE_START_TIME,
         SessionState.ASKING_SCHEDULE_LOCATION,
         SessionState.ASKING_SCHEDULE_DETAIL,
         SessionState.ASKING_SCHEDULE_DEADLINE,
