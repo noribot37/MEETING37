@@ -103,7 +103,6 @@ def process_message(user_id: str, message_text: str, reply_token: str, user_disp
         print(f"DEBUG: Processing ASKING_CONTINUE_ON_DUPLICATE_SCHEDULE. Message: {message_text}")
         schedule_commands.process_schedule_registration_step(user_id, message_text, reply_token, line_bot_api_messaging)
 
-    # ★★★★ ここから順序を修正します ★★★★
     # スケジュール削除の確認状態を明示的にハンドリング
     elif current_state == SessionState.ASKING_CONFIRM_SCHEDULE_DELETE:
         print(f"DEBUG: Processing ASKING_CONFIRM_SCHEDULE_DELETE. Message: {message_text}")
@@ -116,7 +115,14 @@ def process_message(user_id: str, message_text: str, reply_token: str, user_disp
     elif current_state.startswith("asking_schedule_delete_"):
         print(f"DEBUG: Processing schedule delete step (startswith). State: {current_state}")
         schedule_commands.process_schedule_deletion_step(user_id, message_text, reply_token, line_bot_api_messaging)
-    # ★★★★ ここまで順序を修正します ★★★★
+
+    # スケジュール編集後の「他に編集したい予定はありますか？」の状態を明示的にハンドリング
+    # ★★★★ここから修正★★★★
+    elif current_state == SessionState.ASKING_FOR_ANOTHER_SCHEDULE_EDIT: 
+        print(f"DEBUG: Processing ASKING_FOR_ANOTHER_SCHEDULE_EDIT. Message: {message_text}")
+        # schedule_commands.process_schedule_edit_step を直接呼び出す
+        schedule_commands.process_schedule_edit_step(user_id, message_text, reply_token, line_bot_api_messaging)
+    # ★★★★ここまで修正★★★★
 
     # スケジュール登録の他の質問フロー
     elif current_state in [
@@ -131,6 +137,7 @@ def process_message(user_id: str, message_text: str, reply_token: str, user_disp
         print(f"DEBUG: Processing schedule registration step. State: {current_state}")
         schedule_commands.process_schedule_registration_step(user_id, message_text, reply_token, line_bot_api_messaging)
     elif current_state.startswith("asking_schedule_edit_"):
+        # `ASKING_FOR_ANOTHER_SCHEDULE_EDIT`よりも後に配置
         print(f"DEBUG: Processing schedule edit step. State: {current_state}")
         schedule_commands.process_schedule_edit_step(user_id, message_text, reply_token, line_bot_api_messaging)
     elif current_state == SessionState.ASKING_ATTENDEE_REGISTRATION_CONFIRMATION:
