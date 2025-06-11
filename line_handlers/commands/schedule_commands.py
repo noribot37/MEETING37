@@ -12,7 +12,7 @@ from google_sheets.utils import (
 from utils.session_manager import get_user_session_data, set_user_session_data, delete_user_session_data
 
 
-# スケジュール一覧表示 (変更なし)
+# スケジュール一覧表示 (ここに修正を追加)
 def list_schedules(user_id, reply_token, line_bot_api_messaging: MessagingApi):
     all_schedules_df = get_all_records(Config.GOOGLE_SHEETS_SCHEDULE_WORKSHEET_NAME)
 
@@ -70,6 +70,10 @@ def list_schedules(user_id, reply_token, line_bot_api_messaging: MessagingApi):
         )
         messages_to_send.append(quick_reply_message)
 
+        # ★★★★ この一行を追加してください ★★★★
+        SessionState.set_state(user_id, SessionState.ASKING_ATTENDEE_REGISTRATION_CONFIRMATION)
+
+
     line_bot_api_messaging.reply_message(
         ReplyMessageRequest(
             reply_token=reply_token,
@@ -89,7 +93,7 @@ def start_schedule_registration(user_id, reply_token, line_bot_api_messaging: Me
         )
     )
 
-# スケジュール登録の次のステップ (ここを大きく修正)
+# スケジュール登録の次のステップ (変更なし)
 def process_schedule_registration_step(user_id, message_text, reply_token, line_bot_api_messaging: MessagingApi):
     current_state = SessionState.get_state(user_id)
     session_data = get_user_session_data(user_id, Config.SESSION_DATA_KEY) or {}
@@ -296,7 +300,6 @@ def process_schedule_registration_step(user_id, message_text, reply_token, line_
                 messages=messages_to_send
             )
         )
-    # ASKING_FOR_ANOTHER_SCHEDULE_REGISTRATIONブロックはmessage_processors.pyでハンドリングされるため削除
 
 # スケジュール編集開始 (変更なし)
 def start_schedule_edit(user_id, reply_token, line_bot_api_messaging: MessagingApi):

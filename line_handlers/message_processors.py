@@ -103,7 +103,7 @@ def process_message(user_id: str, message_text: str, reply_token: str, user_disp
     # スケジュール登録の他の質問フロー
     elif current_state in [
         SessionState.ASKING_SCHEDULE_DATE,
-        SessionState.ASKING_SCHEDULE_START_TIME, # 追加
+        SessionState.ASKING_SCHEDULE_START_TIME,
         SessionState.ASKING_SCHEDULE_TITLE,
         SessionState.ASKING_SCHEDULE_LOCATION,
         SessionState.ASKING_SCHEDULE_DETAIL,
@@ -120,7 +120,7 @@ def process_message(user_id: str, message_text: str, reply_token: str, user_disp
         schedule_commands.process_schedule_deletion_step(user_id, message_text, reply_token, line_bot_api_messaging)
     elif current_state == SessionState.ASKING_ATTENDEE_REGISTRATION_CONFIRMATION:
         print(f"DEBUG: Processing attendee registration confirmation. Message: {message_text}")
-        if message_text == "はい":
+        if message_text.lower() == "はい": # .lower() を追加
             print("DEBUG: Confirmation 'はい', calling start_attendance_qa")
             attendance_qna.start_attendance_qa(
                 user_id,
@@ -128,7 +128,7 @@ def process_message(user_id: str, message_text: str, reply_token: str, user_disp
                 reply_token,
                 line_bot_api_messaging
             )
-        elif message_text == "いいえ":
+        elif message_text.lower() == "いいえ": # .lower() を追加
             print("DEBUG: Confirmation 'いいえ', ending session")
             SessionState.set_state(user_id, SessionState.NONE)
             delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
