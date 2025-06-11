@@ -223,18 +223,20 @@ def process_schedule_registration_step(user_id, message_text, reply_token, line_
                 messages=messages_to_send
             )
         )
-    elif current_state == SessionState.ASKING_FOR_ANOTHER_SCHEDULE_REGISTRATION:
-        if message_text.lower() == 'はい':
-            start_schedule_registration(user_id, reply_token, line_bot_api_messaging)
-        else:
-            SessionState.set_state(user_id, SessionState.NONE)
-            delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
-            line_bot_api_messaging.reply_message(
-                ReplyMessageRequest(
-                    reply_token=reply_token,
-                    messages=[TextMessage(text="スケジュール登録を終了します。")]
-                )
-            )
+    # 以下のASKING_FOR_ANOTHER_SCHEDULE_REGISTRATIONブロックは
+    # message_processors.pyで直接ハンドリングされるため、削除します。
+    # elif current_state == SessionState.ASKING_FOR_ANOTHER_SCHEDULE_REGISTRATION:
+    #     if message_text.lower() == 'はい':
+    #         start_schedule_registration(user_id, reply_token, line_bot_api_messaging)
+    #     else:
+    #         SessionState.set_state(user_id, SessionState.NONE)
+    #         delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
+    #         line_bot_api_messaging.reply_message(
+    #             ReplyMessageRequest(
+    #                 reply_token=reply_token,
+    #                 messages=[TextMessage(text="スケジュール登録を終了します。")]
+    #             )
+    #         )
 
 # スケジュール編集開始 (変更なし)
 def start_schedule_edit(user_id, reply_token, line_bot_api_messaging: MessagingApi):
