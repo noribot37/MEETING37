@@ -12,7 +12,7 @@ from google_sheets.utils import (
 from utils.session_manager import get_user_session_data, set_user_session_data, delete_user_session_data
 
 
-# スケジュール一覧表示 (ここに修正を追加)
+# スケジュール一覧表示 (変更なし)
 def list_schedules(user_id, reply_token, line_bot_api_messaging: MessagingApi):
     all_schedules_df = get_all_records(Config.GOOGLE_SHEETS_SCHEDULE_WORKSHEET_NAME)
 
@@ -70,7 +70,6 @@ def list_schedules(user_id, reply_token, line_bot_api_messaging: MessagingApi):
         )
         messages_to_send.append(quick_reply_message)
 
-        # ★★★★ この一行を追加してください ★★★★
         SessionState.set_state(user_id, SessionState.ASKING_ATTENDEE_REGISTRATION_CONFIRMATION)
 
 
@@ -433,7 +432,7 @@ def start_schedule_deletion(user_id, reply_token, line_bot_api_messaging: Messag
         )
     )
 
-# スケジュール削除の次のステップ (変更なし)
+# スケジュール削除の次のステップ (ここを修正)
 def process_schedule_deletion_step(user_id, message_text, reply_token, line_bot_api_messaging: MessagingApi):
     current_state = SessionState.get_state(user_id)
     session_data = get_user_session_data(user_id, Config.SESSION_DATA_KEY) or {}
@@ -482,22 +481,35 @@ def process_schedule_deletion_step(user_id, message_text, reply_token, line_bot_
         ]
 
         if not matching_schedule.empty:
-            session_data['row_index'] = matching_schedule.index[0] + 2
+            # ★★★★ ここを修正 ★★★★
+            # .item() を使って numpy.int64 を通常の Python int に変換
+            session_data['row_index'] = int(matching_schedule.index[0]) + 2 
+            # ★★★★ ここまで修正 ★★★★
             set_user_session_data(user_id, Config.SESSION_DATA_KEY, session_data)
             SessionState.set_state(user_id, SessionState.ASKING_CONFIRM_SCHEDULE_DELETE)
 
-            confirm_message = "以下のスケジュールを削除します。よろしいですか？\n"
+            confirm_message_text = "以下のスケジュールを削除します。よろしいですか？\n"
             for key, value in session_data.items():
-                if key != 'row_index':
-                    confirm_message += f"{key}: {value}\n"
-            confirm_message += "はい / いいえ"
+                if key != 'row_index': # row_indexは表示しない
+                    confirm_message_text += f"{key}: {value}\n"
 
             line_bot_api_messaging.reply_message(
                 ReplyMessageRequest(
                     reply_token=reply_token,
-                    messages=[TextMessage(text=confirm_message)]
+                    messages=[
+                        TextMessage(
+                            text=confirm_message_text,
+                            quick_reply=QuickReply(
+                                items=[
+                                    QuickReplyItem(action=MessageAction(label="はい", text="はい")),
+                                    QuickReplyItem(action=MessageAction(label="いいえ", text="いいえ"))
+                                ]
+                            )
+                        )
+                    ]
                 )
             )
+
         else:
             SessionState.set_state(user_id, SessionState.NONE)
             delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
@@ -509,21 +521,34 @@ def process_schedule_deletion_step(user_id, message_text, reply_token, line_bot_
             )
     elif current_state == SessionState.ASKING_CONFIRM_SCHEDULE_DELETE:
         if message_text.lower() == 'はい':
-            row_index_to_delete = session_data['row_index']
+            # ★★★★ ここを修正 ★★★★
+            row_index_to_delete = int(session_data['row_index']) # ここも int に変換
+            # ★★★★ ここまで修正 ★★★★
             if delete_schedule(row_index_to_delete):
-                reply_message = "スケジュールを削除しました。\n続けて別のスケジュールを削除しますか？（はい/いいえ）"
+                reply_message = "スケジュールを削除しました。\n続けて別のスケジュールを削除しますか？"
+                messages_to_send = [
+                    TextMessage(
+                        text=reply_message,
+                        quick_reply=QuickReply(
+                            items=[
+                                QuickReplyItem(action=MessageAction(label="はい", text="はい")),
+                                QuickReplyItem(action=MessageAction(label="いいえ", text="いいえ"))
+                            ]
+                        )
+                    )
+                ]
                 SessionState.set_state(user_id, SessionState.ASKING_FOR_NEXT_SCHEDULE_DELETION)
             else:
-                reply_message = "スケジュールの削除に失敗しました。最初からやり直してください。"
+                messages_to_send = [TextMessage(text="スケジュールの削除に失敗しました。最初からやり直してください。")]
                 SessionState.set_state(user_id, SessionState.NONE)
             delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
             line_bot_api_messaging.reply_message(
                 ReplyMessageRequest(
                     reply_token=reply_token,
-                    messages=[TextMessage(text=reply_message)]
+                    messages=messages_to_send
                 )
             )
-        else:
+        elif message_text.lower() == 'いいえ':
             SessionState.set_state(user_id, SessionState.NONE)
             delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
             line_bot_api_messaging.reply_message(
@@ -532,6 +557,20 @@ def process_schedule_deletion_step(user_id, message_text, reply_token, line_bot_
                     messages=[TextMessage(text="スケジュール削除をキャンセルしました。")]
                 )
             )
+        else:
+            line_bot_api_messaging.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(
+                        text="「はい」または「いいえ」でお答えください。",
+                        quick_reply=QuickReply(items=[
+                            QuickReplyItem(action=MessageAction(label="はい", text="はい")),
+                            QuickReplyItem(action=MessageAction(label="いいえ", text="いいえ"))
+                        ])
+                    )]
+                )
+            )
+
     elif current_state == SessionState.ASKING_FOR_NEXT_SCHEDULE_DELETION:
         if message_text.lower() == 'はい':
             start_schedule_deletion(user_id, reply_token, line_bot_api_messaging)

@@ -13,9 +13,12 @@ from utils.session_manager import get_user_session_data, set_user_session_data, 
 
 
 def process_message(user_id: str, message_text: str, reply_token: str, user_display_name: str, line_bot_api_messaging: MessagingApi):
-    print(f"DEBUG: process_message called. User ID: {user_id}, Message: '{message_text}', State: {SessionState.get_state(user_id)}")
-
+    print(f"DEBUG: --- Webhook Received ---")
+    print(f"DEBUG: User ID: {user_id}")
+    print(f"DEBUG: Received Message Text: '{message_text}' (Type: {type(message_text)})")
     current_state = SessionState.get_state(user_id)
+    print(f"DEBUG: Current Session State: {current_state}")
+
     session_data = get_user_session_data(user_id, Config.SESSION_DATA_KEY) or {}
 
     if message_text == "終了":
@@ -98,8 +101,23 @@ def process_message(user_id: str, message_text: str, reply_token: str, user_disp
     # スケジュール重複確認の状態を個別にハンドリング
     elif current_state == SessionState.ASKING_CONTINUE_ON_DUPLICATE_SCHEDULE:
         print(f"DEBUG: Processing ASKING_CONTINUE_ON_DUPLICATE_SCHEDULE. Message: {message_text}")
-        # schedule_commands.py に処理を移譲
         schedule_commands.process_schedule_registration_step(user_id, message_text, reply_token, line_bot_api_messaging)
+
+    # ★★★★ ここから順序を修正します ★★★★
+    # スケジュール削除の確認状態を明示的にハンドリング
+    elif current_state == SessionState.ASKING_CONFIRM_SCHEDULE_DELETE:
+        print(f"DEBUG: Processing ASKING_CONFIRM_SCHEDULE_DELETE. Message: {message_text}")
+        schedule_commands.process_schedule_deletion_step(user_id, message_text, reply_token, line_bot_api_messaging)
+    # スケジュール削除後の継続確認状態を明示的にハンドリング
+    elif current_state == SessionState.ASKING_FOR_NEXT_SCHEDULE_DELETION:
+        print(f"DEBUG: Processing ASKING_FOR_NEXT_SCHEDULE_DELETION. Message: {message_text}")
+        schedule_commands.process_schedule_deletion_step(user_id, message_text, reply_token, line_bot_api_messaging)
+    # スケジュール削除の各ステップ（日付、タイトル入力など）
+    elif current_state.startswith("asking_schedule_delete_"):
+        print(f"DEBUG: Processing schedule delete step (startswith). State: {current_state}")
+        schedule_commands.process_schedule_deletion_step(user_id, message_text, reply_token, line_bot_api_messaging)
+    # ★★★★ ここまで順序を修正します ★★★★
+
     # スケジュール登録の他の質問フロー
     elif current_state in [
         SessionState.ASKING_SCHEDULE_DATE,
@@ -115,12 +133,9 @@ def process_message(user_id: str, message_text: str, reply_token: str, user_disp
     elif current_state.startswith("asking_schedule_edit_"):
         print(f"DEBUG: Processing schedule edit step. State: {current_state}")
         schedule_commands.process_schedule_edit_step(user_id, message_text, reply_token, line_bot_api_messaging)
-    elif current_state.startswith("asking_schedule_delete_"):
-        print(f"DEBUG: Processing schedule delete step. State: {current_state}")
-        schedule_commands.process_schedule_deletion_step(user_id, message_text, reply_token, line_bot_api_messaging)
     elif current_state == SessionState.ASKING_ATTENDEE_REGISTRATION_CONFIRMATION:
         print(f"DEBUG: Processing attendee registration confirmation. Message: {message_text}")
-        if message_text.lower() == "はい": # .lower() を追加
+        if message_text.lower() == "はい":
             print("DEBUG: Confirmation 'はい', calling start_attendance_qa")
             attendance_qna.start_attendance_qa(
                 user_id,
@@ -128,7 +143,7 @@ def process_message(user_id: str, message_text: str, reply_token: str, user_disp
                 reply_token,
                 line_bot_api_messaging
             )
-        elif message_text.lower() == "いいえ": # .lower() を追加
+        elif message_text.lower() == "いいえ":
             print("DEBUG: Confirmation 'いいえ', ending session")
             SessionState.set_state(user_id, SessionState.NONE)
             delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
@@ -139,7 +154,7 @@ def process_message(user_id: str, message_text: str, reply_token: str, user_disp
                 )
             )
         else:
-            print("DEBUG: Invalid confirmation input")
+            print("DEBUG: Invalid confirmation input, falling to else.")
             line_bot_api_messaging.reply_message(
                 ReplyMessageRequest(
                     reply_token=reply_token,
