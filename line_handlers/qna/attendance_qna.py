@@ -1,7 +1,7 @@
 import os
 from datetime import datetime
 import re
-import pandas as pd 
+import pandas as pd
 
 from linebot.v3.messaging import (
     MessagingApi,
@@ -27,7 +27,8 @@ def start_attendance_qa(user_id, user_display_name, reply_token, line_bot_api_me
                     messages=[TextMessage(text="現在、登録されているスケジュールはありません。\nまずは「スケジュール登録」でイベントを作成してください。")]
                 )
             )
-            delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
+            # 修正: Config.SESSION_DATA_KEY を削除
+            delete_user_session_data(user_id)
             SessionState.set_state(user_id, SessionState.NONE)
             return
 
@@ -66,7 +67,8 @@ def start_attendance_qa(user_id, user_display_name, reply_token, line_bot_api_me
                     messages=[TextMessage(text="現在、登録可能な未参加予定のスケジュールはありません。\n「参加予定一覧」で現在の参加予定状況を確認できます。")]
                 )
             )
-            delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
+            # 修正: Config.SESSION_DATA_KEY を削除
+            delete_user_session_data(user_id)
             SessionState.set_state(user_id, SessionState.NONE)
             return
 
@@ -82,7 +84,8 @@ def start_attendance_qa(user_id, user_display_name, reply_token, line_bot_api_me
                 'user_display_name': user_display_name
             }
         }
-        set_user_session_data(user_id, Config.SESSION_DATA_KEY, session_data)
+        # 修正: Config.SESSION_DATA_KEY を削除
+        set_user_session_data(user_id, session_data)
         SessionState.set_state(user_id, SessionState.ASKING_ATTENDANCE_STATUS)
 
         current_event = session_data['data']['unregistered_events'][session_data['data']['current_event_index']]
@@ -113,12 +116,14 @@ def start_attendance_qa(user_id, user_display_name, reply_token, line_bot_api_me
                 messages=[TextMessage(text=error_msg)]
             )
         )
-        delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
+        # 修正: Config.SESSION_DATA_KEY を削除
+        delete_user_session_data(user_id)
         SessionState.set_state(user_id, SessionState.NONE)
 
 
 def handle_attendance_qa_response(user_id, user_message, reply_token, line_bot_api_messaging: MessagingApi):
-    current_session_data = get_user_session_data(user_id, Config.SESSION_DATA_KEY)
+    # 修正: Config.SESSION_DATA_KEY を削除
+    current_session_data = get_user_session_data(user_id)
     if not current_session_data:
         line_bot_api_messaging.reply_message(
             ReplyMessageRequest(
@@ -138,7 +143,8 @@ def handle_attendance_qa_response(user_id, user_message, reply_token, line_bot_a
 
     if not session_user_id or not session_user_display_name:
         messages.append(TextMessage(text="ユーザー情報の取得に失敗しました。\n「参加予定登録」と入力して最初からやり直してください。"))
-        delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
+        # 修正: Config.SESSION_DATA_KEY を削除
+        delete_user_session_data(user_id)
         SessionState.set_state(user_id, SessionState.NONE)
         line_bot_api_messaging.reply_message(ReplyMessageRequest(reply_token=reply_token, messages=messages))
         return
@@ -149,7 +155,8 @@ def handle_attendance_qa_response(user_id, user_message, reply_token, line_bot_a
         status = user_message
         if status in ['〇', '△', '×']:
             data['attendance_status'] = status  # 参加ステータスをセッションデータに保存
-            set_user_session_data(user_id, Config.SESSION_DATA_KEY, current_session_data)  # セッションデータを更新 (重要)
+            # 修正: Config.SESSION_DATA_KEY を削除
+            set_user_session_data(user_id, current_session_data)  # セッションデータを更新 (重要)
             SessionState.set_state(user_id, SessionState.ASKING_FOR_REMARKS_CONFIRMATION)  # 状態を更新
 
             messages.append(TextMessage(
@@ -178,7 +185,8 @@ def handle_attendance_qa_response(user_id, user_message, reply_token, line_bot_a
 
             if not unregistered_events or current_event_index >= len(unregistered_events):
                 messages.append(TextMessage(text="処理すべきイベントが見つかりませんでした。\n「参加予定登録」と入力してやり直してください。"))
-                delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
+                # 修正: Config.SESSION_DATA_KEY を削除
+                delete_user_session_data(user_id)
                 SessionState.set_state(user_id, SessionState.NONE)
                 line_bot_api_messaging.reply_message(ReplyMessageRequest(reply_token=reply_token, messages=messages))
                 return
@@ -203,7 +211,8 @@ def handle_attendance_qa_response(user_id, user_message, reply_token, line_bot_a
                     next_event_index = current_event_index + 1
                     if next_event_index < len(unregistered_events):
                         data['current_event_index'] = next_event_index
-                        set_user_session_data(user_id, Config.SESSION_DATA_KEY, current_session_data) # セッションデータを更新
+                        # 修正: Config.SESSION_DATA_KEY を削除
+                        set_user_session_data(user_id, current_session_data) # セッションデータを更新
 
                         next_event = unregistered_events[next_event_index]
                         messages.append(TextMessage(
@@ -215,19 +224,22 @@ def handle_attendance_qa_response(user_id, user_message, reply_token, line_bot_a
                             ])
                         ))
                         # !!! 修正箇所: 次のイベントがある場合、必ずこの状態に戻す !!!
-                        SessionState.set_state(user_id, SessionState.ASKING_ATTENDANCE_STATUS) 
+                        SessionState.set_state(user_id, SessionState.ASKING_ATTENDANCE_STATUS)
                     else:
                         messages.append(TextMessage(text="全ての未登録イベントの参加予定登録が完了しました！\nありがとうございました。"))
-                        delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
+                        # 修正: Config.SESSION_DATA_KEY を削除
+                        delete_user_session_data(user_id)
                         SessionState.set_state(user_id, SessionState.NONE)
 
                 else:
                     messages.append(TextMessage(text=f"参加予定登録中にエラーが発生しました: {msg}"))
-                    delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
+                    # 修正: Config.SESSION_DATA_KEY を削除
+                    delete_user_session_data(user_id)
                     SessionState.set_state(user_id, SessionState.NONE)
             except Exception as e:
                 messages.append(TextMessage(text=f"参加予定登録中に予期せぬエラーが発生しました: {e}"))
-                delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
+                # 修正: Config.SESSION_DATA_KEY を削除
+                delete_user_session_data(user_id)
                 SessionState.set_state(user_id, SessionState.NONE)
         else:
             messages.append(TextMessage(
@@ -238,7 +250,7 @@ def handle_attendance_qa_response(user_id, user_message, reply_token, line_bot_a
                 ])
             ))
             # !!! 修正箇所: 不適切な入力の場合も状態は変えない !!!
-            SessionState.set_state(user_id, SessionState.ASKING_FOR_REMARKS_CONFIRMATION) 
+            SessionState.set_state(user_id, SessionState.ASKING_FOR_REMARKS_CONFIRMATION)
 
     elif state == SessionState.ASKING_ATTENDANCE_REMARKS:
         attendance_remarks = user_message  # ユーザーのメッセージを備考として取得
@@ -248,7 +260,8 @@ def handle_attendance_qa_response(user_id, user_message, reply_token, line_bot_a
 
         if not unregistered_events or current_event_index >= len(unregistered_events):
             messages.append(TextMessage(text="処理すべきイベントが見つかりませんでした。\n「参加予定登録」と入力してやり直してください。"))
-            delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
+            # 修正: Config.SESSION_DATA_KEY を削除
+            delete_user_session_data(user_id)
             SessionState.set_state(user_id, SessionState.NONE)
             line_bot_api_messaging.reply_message(ReplyMessageRequest(reply_token=reply_token, messages=messages))
             return
@@ -273,7 +286,8 @@ def handle_attendance_qa_response(user_id, user_message, reply_token, line_bot_a
                 next_event_index = current_event_index + 1
                 if next_event_index < len(unregistered_events):
                     data['current_event_index'] = next_event_index
-                    set_user_session_data(user_id, Config.SESSION_DATA_KEY, current_session_data) # セッションデータを更新
+                    # 修正: Config.SESSION_DATA_KEY を削除
+                    set_user_session_data(user_id, current_session_data) # セッションデータを更新
 
                     next_event = unregistered_events[next_event_index]
                     messages.append(TextMessage(
@@ -285,33 +299,38 @@ def handle_attendance_qa_response(user_id, user_message, reply_token, line_bot_a
                         ])
                     ))
                     # !!! 修正箇所: 次のイベントがある場合、必ずこの状態に戻す !!!
-                    SessionState.set_state(user_id, SessionState.ASKING_ATTENDANCE_STATUS) 
+                    SessionState.set_state(user_id, SessionState.ASKING_ATTENDANCE_STATUS)
                 else:
                     messages.append(TextMessage(text="全ての未登録イベントの参加予定登録が完了しました！\nありがとうございました。"))
-                    delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
+                    # 修正: Config.SESSION_DATA_KEY を削除
+                    delete_user_session_data(user_id)
                     SessionState.set_state(user_id, SessionState.NONE)
 
             else:
                 messages.append(TextMessage(text=f"参加予定登録中にエラーが発生しました: {msg}"))
-                delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
+                # 修正: Config.SESSION_DATA_KEY を削除
+                delete_user_session_data(user_id)
                 SessionState.set_state(user_id, SessionState.NONE)
         except Exception as e:
             messages.append(TextMessage(text=f"参加予定登録中に予期せぬエラーが発生しました: {e}"))
-            delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
+            # 修正: Config.SESSION_DATA_KEY を削除
+            delete_user_session_data(user_id)
             SessionState.set_state(user_id, SessionState.NONE)
 
     else: # どの状態にも当てはまらない場合（エラーまたは不明な状態）
         # この部分が、意図しない「不明な状態です」メッセージの原因となることがあるため、
         # より慎重なハンドリングが必要。基本的には、このブロックに来る前に適切な状態遷移が行われているべき。
         messages.append(TextMessage(text="現在、参加予定登録の処理が中断されているようです。\n「参加予定登録」と入力して最初からやり直してください。"))
-        delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
+        # 修正: Config.SESSION_DATA_KEY を削除
+        delete_user_session_data(user_id)
         SessionState.set_state(user_id, SessionState.NONE)
 
     # 応答メッセージが空の場合のガード
     if not messages:
         print(f"WARNING: No messages generated for user {user_id} at state {state} with message {user_message}. Sending default reset message.")
         messages.append(TextMessage(text="予期せぬエラーが発生しました。セッションをリセットします。\n「参加予定登録」と入力して最初からやり直してください。"))
-        delete_user_session_data(user_id, Config.SESSION_DATA_KEY)
+        # 修正: Config.SESSION_DATA_KEY を削除
+        delete_user_session_data(user_id)
         SessionState.set_state(user_id, SessionState.NONE)
 
     line_bot_api_messaging.reply_message(
@@ -320,3 +339,4 @@ def handle_attendance_qa_response(user_id, user_message, reply_token, line_bot_a
             messages=messages
         )
     )
+

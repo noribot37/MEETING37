@@ -1,28 +1,33 @@
 # utils/session_manager.py
 
-from config import Config
+import json
 
-_user_session_data = {}
+# ユーザーごとのセッションデータを保持する辞書
+# {user_id: {data_key: data_value, ...}}
+_session_data_store = {}
 
-def get_user_session_data(user_id: str, key: str = Config.SESSION_DATA_KEY):
+def get_user_session_data(user_id):
     """
-    ユーザーのセッションデータを取得します。
+    指定されたユーザーIDのセッションデータを取得します。
+    データが見つからない場合はNoneを返します。
     """
-    return _user_session_data.get(user_id, {}).get(key)
+    return _session_data_store.get(user_id)
 
-def set_user_session_data(user_id: str, key: str = Config.SESSION_DATA_KEY, data: dict = None):
+def set_user_session_data(user_id, data):
     """
-    ユーザーのセッションデータを設定または更新します。
+    指定されたユーザーIDのセッションデータを設定します。
     """
-    if user_id not in _user_session_data:
-        _user_session_data[user_id] = {}
-    _user_session_data[user_id][key] = data
+    _session_data_store[user_id] = data
 
-def delete_user_session_data(user_id: str, key: str = Config.SESSION_DATA_KEY):
+def delete_user_session_data(user_id):
     """
-    ユーザーのセッションデータを削除します。
+    指定されたユーザーIDのセッションデータを削除します。
     """
-    if user_id in _user_session_data and key in _user_session_data[user_id]:
-        del _user_session_data[user_id][key]
-    if user_id in _user_session_data and not _user_session_data[user_id]: # セッションデータが空になったらユーザーエントリも削除
-        del _user_session_data[user_id]
+    if user_id in _session_data_store:
+        del _session_data_store[user_id]
+
+def clear_all_session_data():
+    """
+    全てのセッションデータをクリアします。（テストやデバッグ用）
+    """
+    _session_data_store.clear()
